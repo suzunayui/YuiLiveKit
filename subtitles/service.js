@@ -13,7 +13,14 @@ class SpeechSubtitles extends EventEmitter {
   publish() {this.emit('state',this.state);}
   prepare() {
     if (this.child) return;
-    const child = spawn(this.command,this.args,this.options); this.child = child;
+    let child;
+    try {child = spawn(this.command,this.args,this.options);}
+    catch (error) {
+      // A damaged executable throws here instead of emitting 'error'.
+      Object.assign(this.state,{ready:false,status:'音声処理を起動できません: '+error.message}); this.publish();
+      return;
+    }
+    this.child = child;
     let buffer = '';
     child.stdout.setEncoding('utf8');
     child.stdout.on('data',chunk=>{

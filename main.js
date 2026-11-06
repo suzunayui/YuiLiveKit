@@ -135,7 +135,8 @@ function normalizeSpeech(raw={}) {
   return {config:{microphone:/^\d+$/.test(String(config.microphone)) ? String(config.microphone) : '',
     device:/^cuda:\d+$/.test(config.device) ? config.device : 'cpu',
     model:['base','small','medium','large-v3'].includes(config.model) ? config.model : 'large-v3',
-    threshold:String(Math.max(0.3,Math.min(0.8,Number(config.threshold)||0.5)))},style:normalizeStyle(raw.style)};
+    threshold:String(Math.max(0.3,Math.min(0.8,Number(config.threshold)||0.5)))},style:normalizeStyle(raw.style),
+    startWithChat:raw.startWithChat!==false};
 }
 function loadSpeechSettings() {
   for (const file of [speechSettingsPath(),path.join(app.getPath('appData'),'live-subtitle-assistant','settings.json')]) {
@@ -177,7 +178,7 @@ function startSpeechWithChat(){
   }catch(error){speech.state.status='字幕を開始できません: '+error.message;speech.publish();}
 }
 function requestSpeechWithChat(){
-  if(speech.state.running)return;
+  if(!speech.state.settings.startWithChat||speech.state.running)return;
   if(!optionalRuntime.ready('speech')||optionalRuntime.state.busy)return;
   if(!speech.state.settings.config.microphone){
     speech.state.status='音声字幕タブでマイクを選択すると、チャット取得開始と一緒に字幕も始まります';speech.publish();return;
@@ -199,6 +200,12 @@ ipcMain.handle('speech:stop',()=>{speechPendingWithChat=false;speechStartedWithC
 ipcMain.handle('speech:reload',()=>{if(!speech.state.running&&optionalRuntime.ready('speech')) speech.stop(true);return speech.state;});
 ipcMain.handle('speech:style',(_event,style)=>{
   const settings={...speech.state.settings,style:normalizeStyle(style)};
+  fs.writeFileSync(speechSettingsPath(),JSON.stringify(settings));speech.update(settings);return speech.state;
+});
+// Unlike speech:settings this also applies while subtitles are running; they keep running either way.
+ipcMain.handle('speech:start-with-chat',(_event,enabled)=>{
+  const settings={...speech.state.settings,startWithChat:enabled===true};
+  if(!settings.startWithChat)speechPendingWithChat=false;
   fs.writeFileSync(speechSettingsPath(),JSON.stringify(settings));speech.update(settings);return speech.state;
 });
 ipcMain.handle('speech:clear',()=>{speech.clear();return speech.state;});

@@ -28,12 +28,13 @@ function render(next) {
   if(remaining>0){$('speechJapanese').textContent=state.subtitle.ja;$('speechEnglish').textContent=state.subtitle.en;timer=setTimeout(clear,remaining);}else clear();
 }
 function style() {return {...state.style,fontSize:$('speechFontSize').value,englishSize:$('speechEnglishSize').value,duration:$('speechDuration').value,maskProfanity:$('speechMaskProfanity').checked,alignment:$('speechAlignment').querySelector('input:checked')?.value||'center'};}
-function settings() {return {config:{microphone:$('speechMicrophone').value,device:$('speechDevice').value,model:$('speechModel').value,threshold:$('speechThreshold').value},style:style()};}
+function settings() {return {config:{microphone:$('speechMicrophone').value,device:$('speechDevice').value,model:$('speechModel').value,threshold:$('speechThreshold').value},style:style(),startWithChat:$('speechStartWithChat').checked};}
 async function invoke(channel,arg){try{render(await ipcRenderer.invoke(channel,arg));}catch(error){$('speechStatus').textContent=error.message;}}
 $('speechStart').onclick=()=>invoke('speech:start',settings());
 $('speechStop').onclick=()=>invoke('speech:stop');
 $('speechReload').onclick=()=>invoke('speech:reload');
 for(const id of ['speechMicrophone','speechDevice','speechModel','speechThreshold']) $(id).onchange=()=>{if(state)invoke('speech:settings',settings());};
+$('speechStartWithChat').onchange=()=>invoke('speech:start-with-chat',$('speechStartWithChat').checked);
 $('speechClear').onclick=()=>invoke('speech:clear');
 for(const id of ['speechFontSize','speechEnglishSize','speechDuration','speechMaskProfanity']) $(id).onchange=()=>invoke('speech:style',style());
 for(const radio of $('speechAlignment').querySelectorAll('input')) radio.onchange=()=>invoke('speech:style',style());
@@ -43,5 +44,6 @@ ipcRenderer.invoke('speech:get-state').then(next=>{
   $('speechModel').value=config.model;$('speechThreshold').value=config.threshold;
   $('speechFontSize').value=next.style.fontSize;$('speechEnglishSize').value=next.style.englishSize;$('speechDuration').value=next.style.duration;
   $('speechMaskProfanity').checked=next.style.maskProfanity;
+  $('speechStartWithChat').checked=next.settings.startWithChat;
   render(next);
 }).catch(error=>{$('speechStatus').textContent=error.message;});

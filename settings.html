@@ -755,7 +755,9 @@
       <div id="speechPanel" class="hidden" style="max-width:850px;padding:20px">
         <h2>マイクから日本語・英語の字幕を表示</h2>
         <p>必要なライブラリは「機能の導入」タブから追加できます。</p>
-        <p>マイクなどの設定は自動保存されます。設定済みなら「チャット取得開始」で字幕も開始し、「チャット取得停止」で一緒に停止します。字幕だけの開始・停止もできます。</p>
+        <p>マイクなどの設定は自動保存されます。字幕だけの開始・停止もできます。</p>
+        <label><input id="speechStartWithChat" type="checkbox" checked> 「チャット取得開始」で字幕も一緒に開始する</label>
+        <small>オンのときは、一緒に始まった字幕を「停止」で一緒に止めます。オフにしても、「字幕開始」から字幕を使えます。</small>
         <label>マイク<select id="speechMicrophone"></select></label>
         <label>音声認識に使うデバイス<select id="speechDevice"><option value="cpu">CPU（低速）</option></select></label>
         <label>認識モデル<select id="speechModel"><option value="large-v3">large-v3（精度重視・推奨）</option><option value="medium">medium</option><option value="small">small（速度重視）</option><option value="base">base</option></select></label>
