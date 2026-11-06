@@ -2,7 +2,7 @@ const {_electron:electron}=require('playwright');
 const assert=require('node:assert/strict'),path=require('node:path');
 const root=path.resolve(__dirname,'..');
 (async()=>{
-  const desktop=await electron.launch({executablePath:path.join(root,'dist/win-unpacked/YouTubeOverlay.exe'),env:{...process.env,
+  const desktop=await electron.launch({executablePath:path.join(root,'dist/win-unpacked/YuiLiveKit.exe'),env:{...process.env,
     YT_OVERLAY_TEST_PORT:'15011',YT_OVERLAY_TEST_USER_DATA:path.join(root,'test-output/supers-profile-'+Date.now())}});
   try{
     const page=await desktop.firstWindow();const errors=[];page.on('pageerror',e=>errors.push(e.message));

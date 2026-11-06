@@ -1,6 +1,7 @@
-# 📺 youtube-comments-overlay
+# 📺 YuiLiveKit
 
-![YouTube Comments Overlay Screenshot](https://github.com/suzunayui/youtube-comments-overlay/blob/main/2025-12-07%20(13).png)
+旧名は YouTubeOverlay（youtube-comments-overlay）です。
+
 YouTube のコメントを **OBS に表示できるオーバーレイツール** です。
 
 ---
@@ -9,11 +10,15 @@ YouTube のコメントを **OBS に表示できるオーバーレイツール**
 
 以下のページから最新版をダウンロードできます：
 
-👉 **https://github.com/suzunayui/youtube-comments-overlay/releases/**
+👉 **https://github.com/suzunayui/YuiLiveKit/releases/**
 
 ダウンロードするファイル名の例：
 
-YouTubeOverlay-2025.12.7.exe
+YuiLiveKit-Setup-2026.1107.1.exe
+
+### YouTubeOverlay からの移行
+
+YouTubeOverlay を終了してから YuiLiveKit をインストールして起動すると、コメント履歴・設定・導入済みの機能とモデルを自動で引き継ぎます。移行後は、Windows の設定から YouTubeOverlay をアンインストールしてください。OBS のソース名は、OBS 連携を使うと `YT Overlay - ...` から `YuiLiveKit - ...` に自動で変わります。
 
 
 インストールしてアプリを起動すると、  
@@ -74,7 +79,7 @@ OBS 上にライブチャットが表示されます！
 
 翻訳をオフにするか取得を停止すると、翻訳モデルを終了し、訳文を表示から消します。原文のSQLite保存は既存の仕様です。翻訳結果はメモリ内だけに保持し、DBの構造は変更しません。
 
-配布版: dist/YouTubeOverlay-2026.10.10-15.exe（約111MBの軽量版）。Python、Node.js、Ollamaの事前インストールは不要です。既存のYouTubeOverlayを終了してからインストーラーを実行してください。
+配布版: dist/YuiLiveKit-Setup-2026.1107.1.exe（約111MBの軽量版）。Python、Node.js、Ollamaの事前インストールは不要です。既存のYuiLiveKitを終了してからインストーラーを実行してください。
 
 開発版: Node.js 24以降とPython 3.13を用意し、npm install、./setup-translation.ps1、npm start。npm run buildで軽量インストーラーを作成します。Electron 41、better-sqlite3 13へ更新しています。npm testとnode scripts/verify-translation.cjsで確認できます。
 

@@ -2,7 +2,7 @@ const {_electron:electron}=require('playwright');
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const root=path.resolve(__dirname,'..'),output=path.join(root,'test-output');fs.mkdirSync(output,{recursive:true});
 async function main(){
-  const desktop=await electron.launch({executablePath:process.env.YT_OVERLAY_PACKAGED_EXE||path.join(root,'dist/win-unpacked/YouTubeOverlay.exe'),args:[],cwd:root,
+  const desktop=await electron.launch({executablePath:process.env.YT_OVERLAY_PACKAGED_EXE||path.join(root,'dist/win-unpacked/YuiLiveKit.exe'),args:[],cwd:root,
     env:{...process.env,PATH:`${process.env.SystemRoot}\\System32;${process.env.SystemRoot}`,YT_OVERLAY_TEST_USER_DATA:path.join(output,'addons-profile'),YT_OVERLAY_TEST_PORT:'15003',YT_OVERLAY_TEST_RUNTIME:path.join(output,'addon-runtime')},timeout:30000});
   try{
     const page=await desktop.firstWindow(),errors=[];page.on('pageerror',error=>errors.push(error.message));

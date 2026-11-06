@@ -5,7 +5,7 @@ const root=path.resolve(__dirname,'..');
 (async()=>{
   const profile=path.join(root,'test-output/chat-subtitles-profile-'+Date.now());fs.mkdirSync(profile,{recursive:true});
   fs.writeFileSync(path.join(profile,'speech-settings.json'),JSON.stringify({config:{microphone:'',device:'cpu',model:'large-v3',threshold:'0.5'}}));
-  const desktop=await electron.launch({executablePath:path.join(root,'dist/win-unpacked/YouTubeOverlay.exe'),env:{...process.env,
+  const desktop=await electron.launch({executablePath:path.join(root,'dist/win-unpacked/YuiLiveKit.exe'),env:{...process.env,
     YT_OVERLAY_TEST_PORT:'15008',YT_OVERLAY_TEST_USER_DATA:profile,YT_OVERLAY_TEST_RUNTIME:path.join(root,'test-output/addon-runtime'),HF_HUB_OFFLINE:'1'}});
   try{
     const page=await desktop.firstWindow();const errors=[];page.on('pageerror',e=>errors.push(e.message));

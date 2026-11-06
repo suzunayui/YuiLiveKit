@@ -19,8 +19,13 @@ class OptionalRuntime extends EventEmitter {
     this.python=packaged?path.join(root,'python','python.exe'):path.join(source,'.venv/Scripts/python.exe');
     this.backends=path.join(root,'backends');this.llama=packaged?path.join(root,'llama','llama-server.exe'):path.join(source,'build/translation-runtime/llama-server.exe');
     this.state={busy:false,installing:null,statusKind:null,status:'使いたい機能の「導入」ボタンを押してください',features:{}};
+    // The search path holds absolute paths, so it must follow the runtime if the data folder moves.
+    if(packaged&&fs.existsSync(path.join(path.dirname(this.python),'bootstrap.ready')))this.writePythonSearchPath();
     if(packaged)for(const kind of ['speech','translation'])if(this.ready(kind))copyTree(path.join(source,kind==='speech'?'subtitles':'translation','backend'),path.dirname(this.worker(kind)));
     this.refresh();
+  }
+  writePythonSearchPath(){
+    fs.writeFileSync(path.join(path.dirname(this.python),'python313._pth'),['python313.zip','.','Lib/site-packages',path.join(this.backends,'subtitles'),path.join(this.backends,'translation'),'import site',''].join('\n'));
   }
   ready(kind){
     if(!this.packaged)return fs.existsSync(this.python)&&(kind!=='translation'||fs.existsSync(this.llama));
@@ -58,7 +63,7 @@ class OptionalRuntime extends EventEmitter {
     const zip=await this.download(PYTHON,'python.zip');await this.expand(zip,folder);
     const pip=await this.download(PIP,'pip.zip');await this.expand(pip,folder);
     fs.mkdirSync(path.join(folder,'Lib/site-packages'),{recursive:true});
-    fs.writeFileSync(path.join(folder,'python313._pth'),['python313.zip','.','Lib/site-packages',path.join(this.backends,'subtitles'),path.join(this.backends,'translation'),'import site',''].join('\n'));
+    this.writePythonSearchPath();
     await this.run(this.python,['-m','pip','--version']);fs.writeFileSync(marker,'3.13.15 / pip 26.2.1\n');
     fs.unlinkSync(zip);fs.unlinkSync(pip);
   }

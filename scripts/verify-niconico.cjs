@@ -4,7 +4,7 @@ const path=require('node:path');
 const fs=require('node:fs');
 const root=path.resolve(__dirname,'..');
 (async()=>{
-  const desktop=await electron.launch({executablePath:path.join(root,'dist/win-unpacked/YouTubeOverlay.exe'),
+  const desktop=await electron.launch({executablePath:path.join(root,'dist/win-unpacked/YuiLiveKit.exe'),
     env:{...process.env,YT_OVERLAY_TEST_PORT:'15007',YT_OVERLAY_TEST_USER_DATA:path.join(root,'test-output/niconico-render-profile')}});
   try{
     const windowEvent=desktop.waitForEvent('window');

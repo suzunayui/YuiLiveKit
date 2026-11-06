@@ -1,5 +1,5 @@
 // main.js
-const { app, BrowserWindow, ipcMain, shell, clipboard } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, shell, clipboard } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const express = require("express");
@@ -31,7 +31,22 @@ const {
 const {LocalTranslation} = require('./translation/local-translation');
 const {CommentTranslation} = require('./translation/comments');
 const {execFileSync} = require('node:child_process');
-if (process.env.YT_OVERLAY_TEST_USER_DATA) app.setPath('userData', process.env.YT_OVERLAY_TEST_USER_DATA);
+const {USER_DATA_NAME, migrateUserData} = require('./dataMigration');
+const {migrateSourceList, renameLegacyInputs} = require('./obsSources');
+if (process.env.YT_OVERLAY_TEST_USER_DATA) {
+  app.setPath('userData', process.env.YT_OVERLAY_TEST_USER_DATA);
+} else if (app.isPackaged) {
+  // Development runs keep their own folder, so `npm start` never moves installed data.
+  const appData = app.getPath('appData');
+  const target = path.join(appData, USER_DATA_NAME);
+  app.setPath('userData', target);
+  try {
+    migrateUserData({appData, target});
+  } catch (error) {
+    dialog.showErrorBox('YuiLiveKit', `以前のバージョンのデータを移行できませんでした。\nYouTubeOverlayを終了してから、もう一度起動してください。\n\n${error.message}`);
+    app.exit(1);
+  }
+}
 let commentTranslation = null;
 let chatRequested = false;
 let chatGeneration = 0;
@@ -253,11 +268,11 @@ const DEFAULT_OBS_SETTINGS = {
   items: ["overlay", "niconico", "participantsVertical", "participantsHorizontal", "ohayo"],
 };
 const OBS_BROWSER_SOURCE_DEFS = [
-  {id:'subtitles',label:'日英音声字幕',inputName:'YT Overlay - Subtitles',url:`http://127.0.0.1:${OVERLAY_PORT}/subtitles`,width:1920,height:1080},
+  {id:'subtitles',label:'日英音声字幕',inputName:'YuiLiveKit - Subtitles',url:`http://127.0.0.1:${OVERLAY_PORT}/subtitles`,width:1920,height:1080},
   {
     id: "overlay",
     label: "通常コメント",
-    inputName: "YT Overlay - Comments",
+    inputName: "YuiLiveKit - Comments",
     url: `http://127.0.0.1:${OVERLAY_PORT}/`,
     width: 800,
     height: 600,
@@ -265,7 +280,7 @@ const OBS_BROWSER_SOURCE_DEFS = [
   {
     id: "niconico",
     label: "ニコニコ風",
-    inputName: "YT Overlay - Niconico",
+    inputName: "YuiLiveKit - Niconico",
     url: `http://127.0.0.1:${OVERLAY_PORT}/niconico`,
     width: 1920,
     height: 1080,
@@ -273,7 +288,7 @@ const OBS_BROWSER_SOURCE_DEFS = [
   {
     id: "participantsVertical",
     label: "参加管理（縦並び）",
-    inputName: "YT Overlay - Participants Vertical",
+    inputName: "YuiLiveKit - Participants Vertical",
     url: `http://127.0.0.1:${OVERLAY_PORT}/participants?layout=vertical`,
     width: 520,
     height: 720,
@@ -281,7 +296,7 @@ const OBS_BROWSER_SOURCE_DEFS = [
   {
     id: "participantsHorizontal",
     label: "参加管理（横並び）",
-    inputName: "YT Overlay - Participants Horizontal",
+    inputName: "YuiLiveKit - Participants Horizontal",
     url: `http://127.0.0.1:${OVERLAY_PORT}/participants?layout=horizontal`,
     width: 1920,
     height: 300,
@@ -289,7 +304,7 @@ const OBS_BROWSER_SOURCE_DEFS = [
   {
     id: "ohayo",
     label: "おはよう",
-    inputName: "YT Overlay - Ohayo",
+    inputName: "YuiLiveKit - Ohayo",
     url: `http://127.0.0.1:${OVERLAY_PORT}/ohayo`,
     width: 420,
     height: 140,
@@ -528,7 +543,7 @@ function normalizeObsSettings(raw = {}) {
     host: String(raw.host || DEFAULT_OBS_SETTINGS.host).trim() || DEFAULT_OBS_SETTINGS.host,
     port: Number.isFinite(port) && port > 0 ? port : DEFAULT_OBS_SETTINGS.port,
     password: String(raw.password || ""),
-    sources: String(raw.sources || ""),
+    sources: migrateSourceList(raw.sources),
     items: items.length > 0 ? items : DEFAULT_OBS_SETTINGS.items,
   };
 }
@@ -574,10 +589,10 @@ async function refreshObsBrowserSources(settingsInput, { force = false } = {}) {
   try {
     await obs.connect(address, settings.password || undefined);
 
+    const inputNames = await renameLegacyInputs(obs);
     let targets = obsSourceNames(settings);
     if (targets.length === 0) {
-      const inputList = await obs.call("GetInputList", { inputKind: "browser_source" });
-      targets = (inputList.inputs || []).map((input) => input.inputName).filter(Boolean);
+      targets = Array.from(inputNames).filter(Boolean);
     }
 
     const refreshed = [];
@@ -628,8 +643,7 @@ async function addObsBrowserSources(settingsInput) {
 
     const selected = new Set(settings.items);
     const defs = OBS_BROWSER_SOURCE_DEFS.filter((def) => selected.has(def.id));
-    const inputList = await obs.call("GetInputList", { inputKind: "browser_source" });
-    const existingInputs = new Set((inputList.inputs || []).map((input) => input.inputName));
+    const existingInputs = await renameLegacyInputs(obs);
 
     const added = [];
     const updated = [];
