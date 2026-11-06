@@ -38,7 +38,9 @@ function migrateUserData({ appData, target, legacyNames = LEGACY_USER_DATA_NAMES
   if (!source) return { status: "none" };
 
   let setAside = null;
-  if (fs.existsSync(target)) {
+  if (fs.existsSync(target) && fs.readdirSync(target).length === 0) {
+    fs.rmdirSync(target);
+  } else if (fs.existsSync(target)) {
     setAside = `${target}.before-migration-${now()}`;
     fs.renameSync(target, setAside);
   }

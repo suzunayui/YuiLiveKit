@@ -15,6 +15,7 @@ let insertStmt = null;
 let dbPath = null;
 
 const DEFAULT_LIMIT = 50;
+const DELETED_ID_LIMIT = 500;
 
 function ensureColorsColumn() {
   try {
@@ -60,20 +61,32 @@ function ensureBadgeColumns() {
   }
 }
 
-function ensureBossStateTable() {
+function ensureModerationColumns() {
   try {
-    if (!db) return;
+    const rows = db.prepare("PRAGMA table_info(comments)").all();
+    if (!rows.some((r) => r.name === "author_channel_id")) {
+      db.prepare("ALTER TABLE comments ADD COLUMN author_channel_id TEXT").run();
+    }
+    if (!rows.some((r) => r.name === "deleted_ms")) {
+      db.prepare("ALTER TABLE comments ADD COLUMN deleted_ms INTEGER").run();
+    }
+  } catch (err) {
+    console.warn("ensureModerationColumns error:", err.message || err);
+  }
+}
+
+// Overlays poll several times a second, so these queries must stay fast as history grows.
+function ensureIndexes() {
+  try {
     db.exec(
-      `CREATE TABLE IF NOT EXISTS boss_state (
-        id TEXT PRIMARY KEY,
-        level INTEGER,
-        hp INTEGER,
-        max_hp INTEGER,
-        updated_ms INTEGER
-      )`
+      `CREATE INDEX IF NOT EXISTS idx_comments_timestamp ON comments(timestamp_ms);
+       CREATE INDEX IF NOT EXISTS idx_comments_author_video ON comments(author, video_id, timestamp_ms);
+       CREATE INDEX IF NOT EXISTS idx_comments_video ON comments(video_id, timestamp_ms);
+       CREATE INDEX IF NOT EXISTS idx_comments_channel ON comments(author_channel_id, video_id);
+       CREATE INDEX IF NOT EXISTS idx_comments_deleted ON comments(deleted_ms) WHERE deleted_ms IS NOT NULL;`
     );
   } catch (err) {
-    console.warn("ensureBossStateTable error:", err.message || err);
+    console.warn("ensureIndexes error:", err.message || err);
   }
 }
 
@@ -111,172 +124,15 @@ function initChatStore(baseDir) {
   ensureIconColumn();
   ensureColorsColumn();
   ensureBadgeColumns();
-  ensureBossStateTable();
+  ensureModerationColumns();
+  ensureIndexes();
   insertStmt = db.prepare(
     `INSERT OR IGNORE INTO comments
-     (id, video_id, timestamp_ms, timestamp, author, text, kind, amount, amount_text, icon, parts_json, colors_json, is_member, is_moderator, is_owner)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     (id, video_id, timestamp_ms, timestamp, author, text, kind, amount, amount_text, icon, parts_json, colors_json, is_member, is_moderator, is_owner, author_channel_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   return dbPath;
-}
-
-function clampInt(v, min, max, def) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return def;
-  return Math.max(min, Math.min(max, Math.trunc(n)));
-}
-
-function calcBossMaxHp(base, factor, level) {
-  const lv = Math.max(1, Math.trunc(Number(level) || 1));
-  const pow = Math.pow(Number(factor) || 1, lv - 1);
-  // Guard against floating point edge cases around integer boundaries.
-  return Math.max(100, Math.floor(base * pow + 1e-9));
-}
-
-function getBossState({ baseHp = 100, scale = 1.1, id = "default" } = {}) {
-  return new Promise((resolve) => {
-    if (!db) {
-      resolve(null);
-      return;
-    }
-    const base = clampInt(baseHp, 100, 999999999, 100);
-    const s = Number(scale);
-    const factor = Number.isFinite(s) && s > 1 ? s : 1.1;
-    try {
-      const row = db
-        .prepare("SELECT id, level, hp, max_hp, updated_ms FROM boss_state WHERE id = ?")
-        .get(id);
-      if (row) {
-        const level = row.level || 1;
-        const expectedMax = calcBossMaxHp(base, factor, level);
-        const storedMax = row.max_hp ?? expectedMax;
-        let hp = row.hp ?? expectedMax;
-        if (storedMax !== expectedMax) {
-          // If boss was "full" under previous settings, keep it full after scaling change.
-          if (hp === storedMax) hp = expectedMax;
-        }
-        hp = Math.max(0, Math.min(expectedMax, hp));
-
-        // Keep DB consistent with the requested baseHp/scale.
-        if ((row.max_hp ?? null) !== expectedMax || (row.hp ?? null) !== hp) {
-          const now = Date.now();
-          db.prepare(
-            `INSERT INTO boss_state (id, level, hp, max_hp, updated_ms)
-             VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET
-               level=excluded.level,
-               hp=excluded.hp,
-               max_hp=excluded.max_hp,
-               updated_ms=excluded.updated_ms`
-          ).run(id, level, hp, expectedMax, now);
-          resolve({ id: row.id, level, hp, maxHp: expectedMax, updatedMs: now, scale: factor });
-          return;
-        }
-
-        resolve({ id: row.id, level, hp, maxHp: expectedMax, updatedMs: row.updated_ms ?? null, scale: factor });
-        return;
-      }
-      const now = Date.now();
-      db.prepare(
-        "INSERT INTO boss_state (id, level, hp, max_hp, updated_ms) VALUES (?, ?, ?, ?, ?)"
-      ).run(id, 1, base, base, now);
-      resolve({
-        id,
-        level: 1,
-        hp: base,
-        maxHp: base,
-        updatedMs: now,
-        scale: factor,
-      });
-    } catch (err) {
-      console.warn("getBossState error:", err.message || err);
-      resolve(null);
-    }
-  });
-}
-
-function applyBossHit({ damage, baseHp = 100, scale = 1.1, id = "default" } = {}) {
-  return new Promise((resolve) => {
-    if (!db) {
-      resolve(null);
-      return;
-    }
-    const dmg = clampInt(damage, 0, 999999999, 0);
-    const base = clampInt(baseHp, 100, 999999999, 100);
-    const s = Number(scale);
-    const factor = Number.isFinite(s) && s > 1 ? s : 1.1;
-
-    try {
-      const tx = db.transaction(() => {
-        const row = db
-          .prepare("SELECT id, level, hp, max_hp FROM boss_state WHERE id = ?")
-          .get(id);
-        let level = row?.level || 1;
-        const expectedMax = calcBossMaxHp(base, factor, level);
-        const storedMax = row?.max_hp ?? expectedMax;
-        let maxHp = expectedMax;
-        let hp = row?.hp ?? maxHp;
-        if (storedMax !== expectedMax) {
-          if (hp === storedMax) hp = expectedMax;
-        }
-        hp = Math.max(0, Math.min(maxHp, hp));
-
-        hp = Math.max(0, hp - dmg);
-        let killed = false;
-        if (hp <= 0) {
-          killed = true;
-          level = level + 1;
-          maxHp = calcBossMaxHp(base, factor, level);
-          hp = maxHp;
-        }
-
-        const now = Date.now();
-        db.prepare(
-          `INSERT INTO boss_state (id, level, hp, max_hp, updated_ms)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET
-             level=excluded.level,
-             hp=excluded.hp,
-             max_hp=excluded.max_hp,
-             updated_ms=excluded.updated_ms`
-        ).run(id, level, hp, maxHp, now);
-
-        return { id, level, hp, maxHp, updatedMs: now, killed, scale: factor };
-      });
-
-      resolve(tx());
-    } catch (err) {
-      console.warn("applyBossHit error:", err.message || err);
-      resolve(null);
-    }
-  });
-}
-
-function resetBossState({ baseHp = 100, id = "default" } = {}) {
-  return new Promise((resolve) => {
-    if (!db) {
-      resolve(null);
-      return;
-    }
-    const base = clampInt(baseHp, 100, 999999999, 100);
-    try {
-      const now = Date.now();
-      db.prepare(
-        `INSERT INTO boss_state (id, level, hp, max_hp, updated_ms)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           level=excluded.level,
-           hp=excluded.hp,
-           max_hp=excluded.max_hp,
-           updated_ms=excluded.updated_ms`
-      ).run(id, 1, base, base, now);
-      resolve({ id, level: 1, hp: base, maxHp: base, updatedMs: now });
-    } catch (err) {
-      console.warn("resetBossState error:", err.message || err);
-      resolve(null);
-    }
-  });
 }
 
 function saveComment(msg) {
@@ -300,7 +156,8 @@ function saveComment(msg) {
       colorsJson,
       msg.is_member ? 1 : 0,
       msg.is_moderator ? 1 : 0,
-      msg.is_owner ? 1 : 0
+      msg.is_owner ? 1 : 0,
+      msg.author_channel_id || null
     );
     if (result.changes > 0) commentEvents.emit('comment', msg);
     return result.changes > 0;
@@ -318,10 +175,10 @@ function getRecentComments(limit = DEFAULT_LIMIT, filter = {}) {
     try {
       const lim = Number.isFinite(limit) ? Math.max(1, Math.min(limit, 500)) : DEFAULT_LIMIT;
       const params=[];
-      let where='';
+      let where='WHERE deleted_ms IS NULL';
       if(filter.supportOnly){
-        const videoId=filter.videoId||db.prepare('SELECT video_id FROM comments ORDER BY timestamp_ms DESC, rowid DESC LIMIT 1').get()?.video_id||'';
-        where="WHERE kind IN ('paid','sticker','membership','gift_purchase','gift_redeem') AND COALESCE(video_id,'') = ?";
+        const videoId=filter.videoId||db.prepare('SELECT video_id FROM comments WHERE deleted_ms IS NULL ORDER BY timestamp_ms DESC, rowid DESC LIMIT 1').get()?.video_id||'';
+        where+=" AND kind IN ('paid','sticker','membership','gift_purchase','gift_redeem') AND COALESCE(video_id,'') = ?";
         params.push(videoId);
       }
       const unlimited=filter.supportOnly&&limit===null;
@@ -369,6 +226,42 @@ function getRecentComments(limit = DEFAULT_LIMIT, filter = {}) {
       resolve([]);
     }
   });
+}
+
+/** Hides a comment removed on YouTube. The row stays so a re-delivered copy cannot reappear. */
+function markCommentDeleted(id, deletedMs = Date.now()) {
+  if (!db || !id) return 0;
+  try {
+    return db.prepare("UPDATE comments SET deleted_ms = ? WHERE id = ? AND deleted_ms IS NULL").run(deletedMs, id).changes;
+  } catch (err) {
+    console.warn("markCommentDeleted sqlite error:", err.message || err);
+    return 0;
+  }
+}
+
+function markAuthorCommentsDeleted(channelId, videoId, deletedMs = Date.now()) {
+  if (!db || !channelId) return 0;
+  try {
+    return db
+      .prepare("UPDATE comments SET deleted_ms = ? WHERE author_channel_id = ? AND video_id = ? AND deleted_ms IS NULL")
+      .run(deletedMs, channelId, videoId).changes;
+  } catch (err) {
+    console.warn("markAuthorCommentsDeleted sqlite error:", err.message || err);
+    return 0;
+  }
+}
+
+function getDeletedCommentIds(limit = DELETED_ID_LIMIT) {
+  if (!db) return [];
+  try {
+    return db
+      .prepare("SELECT id FROM comments WHERE deleted_ms IS NOT NULL ORDER BY deleted_ms DESC LIMIT ?")
+      .all(limit)
+      .map((row) => row.id);
+  } catch (err) {
+    console.warn("getDeletedCommentIds sqlite error:", err.message || err);
+    return [];
+  }
 }
 
 function getSupportComments(videoId) {
@@ -468,9 +361,9 @@ module.exports = {
   getAuthorFirstSeenMap,
   getVideoFirstSeenMap,
   getAuthorVideoFirstSeenRows,
-  getBossState,
-  applyBossHit,
-  resetBossState,
+  markCommentDeleted,
+  markAuthorCommentsDeleted,
+  getDeletedCommentIds,
   closeChatStore,
   getDbPath: () => dbPath,
 };

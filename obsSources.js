@@ -37,4 +37,21 @@ async function renameLegacyInputs(obs) {
   return names;
 }
 
-module.exports = { migrateSourceList, renameLegacyInputs };
+/** Encrypts the password for saving; stays in plain text only where the OS offers no encryption. */
+function sealPassword(settings, safeStorage) {
+  if (!settings.password || !safeStorage.isEncryptionAvailable()) return settings;
+  const { password, ...rest } = settings;
+  return { ...rest, passwordEncrypted: safeStorage.encryptString(password).toString("base64") };
+}
+
+function openPassword(raw, safeStorage) {
+  if (!raw.passwordEncrypted) return String(raw.password || "");
+  try {
+    return safeStorage.decryptString(Buffer.from(raw.passwordEncrypted, "base64"));
+  } catch (error) {
+    console.warn("OBS password could not be decrypted:", error?.message || error);
+    return "";
+  }
+}
+
+module.exports = { migrateSourceList, renameLegacyInputs, sealPassword, openPassword };

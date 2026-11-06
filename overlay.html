@@ -194,6 +194,16 @@
     }
   }
 
+  async function removeDeletedComments() {
+    const res = await fetch("/api/comments/deleted");
+    for (const id of await res.json()) {
+      const element = renderedElements.get(id);
+      if (!element) continue;
+      element.remove();
+      renderedElements.delete(id);
+    }
+  }
+
   async function fetchComments() {
     try {
       const res = await fetch("/comments");
@@ -330,6 +340,7 @@
         }
         if (rendered.size > 10000) rendered.delete(rendered.values().next().value);
       }
+      await removeDeletedComments();
 
     } catch (e) {
       console.error("fetchComments error", e);

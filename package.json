@@ -12,7 +12,8 @@
   },
   "devDependencies": {
     "electron": "^41.0.0",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "playwright": "^1.65.0"
   },
   "build": {
     "appId": "com.suzunayui.yuilivekit",
@@ -51,7 +52,6 @@
   "dependencies": {
     "better-sqlite3": "^13.0.3",
     "express": "^5.2.1",
-    "obs-websocket-js": "^5.0.8",
-    "playwright": "^1.57.0"
+    "obs-websocket-js": "^5.0.8"
   }
 }

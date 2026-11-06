@@ -13,6 +13,13 @@ let generation = 0;
 // ==============================
 // 共通ユーティリティ
 // ==============================
+const ENDED_POLLS_BEFORE_STOP = 3;
+
+function applyRemoval(removal, videoId) {
+  if (removal.targetItemId) chatStore.markCommentDeleted(removal.targetItemId);
+  else chatStore.markAuthorCommentsDeleted(removal.authorChannelId, videoId);
+}
+
 function pushComment(msg) {
   // DB のみに保存する（メモリには保持しない）
   chatStore.saveComment(msg);
@@ -373,21 +380,39 @@ function formatDateTime(dt) {
 }
 
 /**
+ * モデレーターや YouTube による削除アクションを読み取る
+ */
+function parseRemovalAction(action) {
+  const byId = action.removeChatItemAction || action.markChatItemAsDeletedAction;
+  if (byId?.targetItemId) return { targetItemId: byId.targetItemId };
+  const byAuthor = action.removeChatItemByAuthorAction || action.markChatItemsByAuthorAsDeletedAction;
+  if (byAuthor?.externalChannelId) return { authorChannelId: byAuthor.externalChannelId };
+  return null;
+}
+
+/**
  * 1回分のチャットを取得して:
  *  - 抽出したメッセージ一覧
- *  - 次の continuation
+ *  - 削除されたコメントの一覧
+ *  - 次の continuation（配信が終わっていると null）
  *  - 次回までの timeoutMs
  * を返す
  */
 async function fetchChatOnce(apiKey, clientVersion, continuation) {
   const data = await postLiveChat(apiKey, clientVersion, continuation);
 
-  const liveCont = data.continuationContents.liveChatContinuation;
-  const actions = liveCont.actions || [];
+  const liveCont = data.continuationContents?.liveChatContinuation;
+  const actions = liveCont?.actions || [];
   const chatItems = [];
+  const removals = [];
 
   for (let idx = 0; idx < actions.length; idx++) {
     const action = actions[idx];
+    const removal = parseRemovalAction(action);
+    if (removal) {
+      removals.push(removal);
+      continue;
+    }
     if (!action.addChatItemAction) continue;
     const item = action.addChatItemAction.item;
 
@@ -587,14 +612,17 @@ async function fetchChatOnce(apiKey, clientVersion, continuation) {
       is_member: isMember,
       is_moderator: badgeInfo.isModerator,
       is_owner: badgeInfo.isOwner,
+      author_channel_id: renderer.authorExternalChannelId || null,
     });
   }
 
-  const cont0 = liveCont.continuations[0];
+  const cont0 = liveCont?.continuations?.[0];
+  if (!cont0) return { chatItems, removals, nextCont: null, timeoutMs: 5000 };
+
   const { continuation: nextCont, timeoutMs } =
     extractContinuationData(cont0);
 
-  return { chatItems, nextCont, timeoutMs };
+  return { chatItems, removals, nextCont, timeoutMs };
 }
 
 // ==============================
@@ -639,28 +667,39 @@ async function startLiveChat(inputStr, onStatus = () => {}) {
 
     console.log("💬 ライブチャット取得開始");
 
+    let endedPolls = 0;
     while (!stopFlag && currentGeneration === generation) {
       try {
-        const { chatItems, nextCont, timeoutMs } = await fetchChatOnce(
+        const { chatItems, removals, nextCont, timeoutMs } = await fetchChatOnce(
           apiKey,
           clientVersion,
           continuation
         );
-        continuation = nextCont;
         if (stopFlag || currentGeneration !== generation) break;
-        onStatus('running');
+        if (nextCont) {
+          continuation = nextCont;
+          endedPolls = 0;
+          onStatus('running');
+        } else {
+          endedPolls += 1;
+          onStatus('reconnecting');
+        }
 
         for (const msg of chatItems) {
           msg.video_id = videoId;
           pushComment(msg);
         }
+        for (const removal of removals) applyRemoval(removal, videoId);
 
-        await sleep(timeoutMs);
+        if (endedPolls < ENDED_POLLS_BEFORE_STOP) await sleep(timeoutMs);
       } catch (e) {
         if (stopFlag || currentGeneration !== generation) break;
         onStatus('reconnecting');
         console.error("⚠ 取得中にエラー:", e);
         await sleep(5000);
+      }
+      if (endedPolls >= ENDED_POLLS_BEFORE_STOP) {
+        throw new Error("配信が終了したため、チャットの取得を停止しました");
       }
     }
 

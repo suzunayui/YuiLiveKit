@@ -1736,6 +1736,7 @@
   // ========== コメントビュー / スパチャ読み ==========
   const COMMENTS_ENDPOINT = `http://127.0.0.1:${process.env.YT_OVERLAY_TEST_PORT || '5000'}/comments`;
   const SUPPORT_ENDPOINT = `http://127.0.0.1:${process.env.YT_OVERLAY_TEST_PORT || '5000'}/api/support-comments`;
+  const DELETED_ENDPOINT = `http://127.0.0.1:${process.env.YT_OVERLAY_TEST_PORT || '5000'}/api/comments/deleted`;
   const PARTICIPANT_ENDPOINT = `http://127.0.0.1:${process.env.YT_OVERLAY_TEST_PORT || '5000'}/api/participants`;
   const OHAYO_ENDPOINT = `http://127.0.0.1:${process.env.YT_OVERLAY_TEST_PORT || '5000'}/api/ohayo`;
   const SUPER_READ_KEY = "yt-overlay-super-read";
@@ -2590,6 +2591,8 @@
         initialLoaded = true;
       }
       lastAfterMs = maxTs;
+      const deletedRes = await fetch(DELETED_ENDPOINT);
+      if (deletedRes.ok) for (const id of await deletedRes.json()) commentStore.delete(id);
       trimStore();
       renderComments();
       await fetchSupportCommentsOnce();
