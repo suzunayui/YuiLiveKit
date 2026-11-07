@@ -3,16 +3,44 @@
 <head>
 <meta charset="utf-8">
 <title>YuiLiveKit</title>
-<style>
-  body { font-family: "Yu Gothic UI", "Segoe UI", sans-serif; margin: 24px; background: #f6f7f9; color: #1d2433; }
-  code { background: #fff; padding: 4px 8px; border-radius: 6px; border: 1px solid #d8dde6; }
-  .error { color: #b3261e; }
-</style>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <h1>YuiLiveKit</h1>
-  <p>M0 試作版です。OBS 用の表示 URL: <code id="url">確認中…</code></p>
-  <p id="error" class="error" hidden></p>
-  <script src="main.js"></script>
+  <header>
+    <h1>YuiLiveKit</h1>
+    <div id="statuses" aria-live="polite"></div>
+  </header>
+
+  <section class="card">
+    <h2>チャットの取得</h2>
+    <label>YouTube <input id="youtube" placeholder="@ハンドル / チャンネルID / 動画ID / YouTubeのURL" autocomplete="off" spellcheck="false"></label>
+    <label>Twitch <input id="twitch" placeholder="チャンネル名 / twitch.tvのURL" autocomplete="off" spellcheck="false"></label>
+    <div class="buttons">
+      <button id="start" class="primary">チャット取得開始</button>
+      <button id="stop">停止</button>
+    </div>
+    <p id="start-error" class="error" hidden></p>
+  </section>
+
+  <section class="card">
+    <h2>OBS</h2>
+    <p>OBS に追加するのは、このブラウザソースだけです: <code id="overlay-url"></code></p>
+    <p id="server-error" class="error" hidden></p>
+  </section>
+
+  <section class="card" id="legacy" hidden>
+    <h2>以前のコメント履歴</h2>
+    <p>以前の YuiLiveKit（YouTubeOverlay）の履歴を一度だけ取り込めます。初見の表示に使います。元のデータは変更しません。</p>
+    <select id="legacy-path"></select>
+    <button id="legacy-import">取り込む</button>
+    <p id="legacy-result"></p>
+  </section>
+
+  <section class="card comments-card">
+    <h2>コメント <span id="comment-count"></span></h2>
+    <ol id="comments"></ol>
+  </section>
+
+  <script type="module" src="main.js"></script>
 </body>
 </html>

@@ -4,16 +4,134 @@
 <meta charset="utf-8">
 <title>YuiLiveKit Overlay</title>
 <style>
-  html, body { margin: 0; background: transparent; overflow: hidden; }
-  #debug { display: none; font: 48px sans-serif; color: #fff; text-shadow: 0 0 6px #000; padding: 24px; }
-  .debug #debug { display: block; }
+  html, body { margin: 0; width: 100vw; height: 100vh; background: transparent; overflow: hidden; }
+  /* Laid out at 1920×1080 and scaled to whatever size OBS gives the source. */
+  #stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0;
+    font-family: "Noto Sans JP", "Yu Gothic UI", "Meiryo", sans-serif; }
+  #comments { position: absolute; left: 24px; bottom: 24px; width: 720px;
+    display: flex; flex-direction: column; justify-content: flex-end; gap: 8px; }
+  .msg { display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; border-radius: 16px;
+    background: rgba(0, 0, 0, 0.78); color: #fff; font-size: 24px; font-weight: 600; line-height: 1.35;
+    text-shadow: 0 0 3px rgba(0, 0, 0, 0.9); animation: in 0.25s ease-out; overflow-wrap: anywhere; }
+  .msg.membership { background: #1e7d32; }
+  .msg.tier1 { background: #1565c0; } .msg.tier2 { background: #00897b; }
+  .msg.tier3 { background: #f9a825; color: #111; text-shadow: none; } .msg.tier4 { background: #c2185b; }
+  .avatar { flex: none; width: 40px; height: 40px; border-radius: 50%; object-fit: cover; }
+  .body { min-width: 0; }
+  .author { color: #ffd8f8; margin-right: 8px; }
+  .amount { margin-right: 8px; }
+  .body img.emoji { height: 1.4em; vertical-align: middle; margin: 0 2px; }
+  .body img.sticker { height: 72px; vertical-align: middle; }
+  @keyframes in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 </style>
 </head>
 <body>
-  <!-- M0: nothing is drawn yet. Add ?debug=1 to see that OBS loaded the page. -->
-  <div id="debug">YuiLiveKit</div>
-  <script>
-    if (new URLSearchParams(location.search).get('debug') === '1') document.body.classList.add('debug');
-  </script>
+<div id="stage"><div id="comments"></div></div>
+<script>
+'use strict';
+// Everything from chat is set with textContent or as an image URL the app already checked.
+const MAX_COMMENTS = 12;
+const stage = document.getElementById('stage');
+const comments = document.getElementById('comments');
+const shown = new Map();
+
+function fit() {
+  stage.style.transform = `scale(${Math.min(innerWidth / 1920, innerHeight / 1080)})`;
+}
+addEventListener('resize', fit);
+fit();
+
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function image(className, url, alt) {
+  const node = element('img', className);
+  node.src = url;
+  node.alt = alt || '';
+  return node;
+}
+
+/** Yen tiers apply only when YouTube sent no colors (other currencies have no amount). */
+function tier(message) {
+  const yen = message.amount_micros == null ? 0 : message.amount_micros / 1e6;
+  if (yen >= 10000) return 'tier4';
+  if (yen >= 2000) return 'tier3';
+  if (yen >= 500) return 'tier2';
+  return 'tier1';
+}
+
+function render(message) {
+  const node = element('div', 'msg');
+  node.dataset.key = message.key;
+  const kind = message.kind;
+  if (['membership', 'gift_purchase', 'gift_redeem'].includes(kind)) node.classList.add('membership');
+  if (['paid', 'sticker', 'bits'].includes(kind)) {
+    const colors = message.colors || {};
+    if (colors.body_bg) node.style.background = colors.body_bg;
+    else node.classList.add(tier(message));
+    if (colors.body_text) node.style.color = colors.body_text;
+  }
+  if (message.icon) node.append(image('avatar', message.icon, message.author));
+  const body = element('div', 'body');
+  body.append(element('span', 'author', message.author));
+  if (message.amount_text) body.append(element('span', 'amount', message.amount_text));
+  for (const part of message.parts || []) {
+    if (part.type === 'text') body.append(document.createTextNode(part.text));
+    else if (part.type === 'emoji') body.append(image('emoji', part.url, part.alt));
+    else if (part.type === 'sticker') body.append(image('sticker', part.url, part.alt));
+  }
+  if (!(message.parts || []).length) body.append(document.createTextNode(message.text || ''));
+  node.append(body);
+  return node;
+}
+
+function add(message) {
+  if (shown.has(message.key)) return;
+  const node = render(message);
+  comments.append(node);
+  shown.set(message.key, node);
+  while (comments.children.length > MAX_COMMENTS) {
+    const oldest = comments.firstElementChild;
+    shown.delete(oldest.dataset.key);
+    oldest.remove();
+  }
+}
+
+function remove(keys) {
+  for (const key of keys) {
+    shown.get(key)?.remove();
+    shown.delete(key);
+  }
+}
+
+function clear() {
+  comments.replaceChildren();
+  shown.clear();
+}
+
+let delay = 500;
+function connect() {
+  const socket = new WebSocket(`ws://${location.host}/overlay/ws`);
+  socket.onopen = () => { delay = 500; };
+  socket.onmessage = event => {
+    const data = JSON.parse(event.data);
+    if (data.type === 'snapshot') { clear(); data.messages.forEach(add); }
+    else if (data.type === 'message') add(data);
+    else if (data.type === 'deleted') remove(data.keys);
+    else if (data.type === 'reset') clear();
+  };
+  // When the app is closed, show nothing and keep trying, so OBS never needs a refresh.
+  socket.onclose = () => {
+    clear();
+    setTimeout(connect, delay);
+    delay = Math.min(delay * 2, 5000);
+  };
+}
+connect();
+</script>
 </body>
 </html>

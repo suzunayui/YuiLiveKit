@@ -1,7 +1,7 @@
 # YuiLiveKit 作り直し仕様書（Rust + Tauri）
 
 - 作成日: 2026-11-08
-- 状態: 確定。M0 完了（2026-11-08、結果は「13. M0 の結果」）
+- 状態: 確定。M0 と M1 完了（2026-11-08、結果は「13. M0 の結果」「14. M1 の結果」）
 - 対象: YuiLiveKit（Electron 版）と YuiAIAssistant を統合し、Rust + Tauri で作り直す
 
 ## 1. 目的と方針
@@ -272,6 +272,8 @@ CREATE TABLE messages (
   stream_id INTEGER NOT NULL REFERENCES streams(id),
   viewer_id INTEGER REFERENCES viewers(id),
   platform_message_id TEXT NOT NULL,
+  author_name TEXT NOT NULL,           -- 送信時の表示名（M1 で追加）
+  icon_url TEXT,                       -- 送信時のアイコン（M1 で追加）
   kind TEXT NOT NULL,                  -- text, paid, sticker, membership, gift_purchase, gift_redeem, bits
   text TEXT NOT NULL,
   parts_json TEXT NOT NULL,            -- テキスト、絵文字、スタンプ
@@ -373,7 +375,7 @@ Electron 版で見つけて直した問題。作り直しでも再発しない�
 | 段階 | 内容 | 完了の条件 |
 |---|---|---|
 | M0 試作（完了） | Tauri の雛形、OBS プラグインの試作、ビルドと配布の流れ | プラグインで OBS にソースが自動で追加される。Tauri の NSIS のレジストリキーを確認した。待機時のメモリを測った |
-| M1 取得と表示 | YouTube と Twitch の取得、DB、履歴の取り込み、配信用サーバー、通常コメントの表示、コメント一覧 | 実際の配信で取得から OBS 表示まで動く。K1、K2、K5〜K10、K14 を満たす |
+| M1 取得と表示（完了） | YouTube と Twitch の取得、DB、履歴の取り込み、配信用サーバー、通常コメントの表示、コメント一覧 | 実際の配信で取得から OBS 表示まで動く。K1、K2、K5〜K10、K14 を満たす |
 | M2 配信の道具 | ニコニコ風、参加管理、おはよう、スパチャ一覧、配置の編集、プラグインの導入ボタン | K3、K4 を満たす。配置を2つ作り、シーンごとに切り替えられる |
 | M3 読み上げと AI | VOICEVOX、絵文字の読み方と効果音、AI 返答、API キーの保存 | K15 を満たす。YuiAIAssistant を使わずに配信できる |
 | M4 字幕と翻訳 | 追加機能の導入、字幕、翻訳 | K11〜K13 を満たす。マイクと GPU で実際に動く |
@@ -448,3 +450,51 @@ M1 から M4 の間は、配信では Electron 版を使い続ける。Electron 
 - 差は約2割で、思ったより小さい。WebView2 も Chromium 系のため、待機時のメモリの大半は画面の表示にかかる。
 - Electron 版は設定画面が大きく、雛形の画面は小さいため、同じ条件の比較ではない。機能を足した後にもう一度測る。
 - 作り直しで大きく減るのは、主にインストーラーと実行ファイルの大きさ。
+
+## 14. M1 の結果（2026-11-08）
+
+実装は `next/src-tauri/src/`（本体はライブラリ、Tauri の部分は `main.rs` だけ）、OBS 表示は `next/overlay/`、設定画面は `next/ui/` にある。
+
+### 14.1 受け入れ条件
+
+| ID | 確認方法 | 結果 |
+|---|---|---|
+| K1 | Rust の単体テスト、OBS 表示と設定画面のテスト（Edge）、実際の Twitch 配信 | 合格。xQc の配信で、モデレーションによる削除1件が反映された |
+| K2 | Rust の単体テスト、OBS 表示のテスト | 合格 |
+| K5 | Rust の単体テスト（改名、同名の別人、取り込んだ履歴との結び付け） | 合格 |
+| K6 | Rust の単体テスト（3回続いたら停止、1回なら続行） | 合格。実際の配信終了では未確認 |
+| K7 | OBS 表示と設定画面のテスト（名前と本文の HTML、許可外の画像ホスト） | 合格 |
+| K8 | Rust の単体テスト、OBS 表示のテスト（`$100.00` が円の金額帯にならない） | 合格 |
+| K9 | 50万件、200配信、2万人の DB（リリースビルド） | 合格。最新50件の取得 1ms、履歴付きの保存 1ms |
+| K10 | 実際のアプリ（デバッグビルド） | 合格。2つ目の起動は自分で終了し、ポートが使用中なら理由を表示して起動は続ける |
+| K14 | Rust の単体テスト、実際の YouTube 配信（`@LofiGirl` と URL） | 合格 |
+
+### 14.2 実際の配信での確認
+
+`examples/chat_probe` で、件数だけを数えた（名前や本文は表示していない）。
+
+- YouTube: Lofi Girl（`@LofiGirl`、`https://www.youtube.com/@LofiGirl/live`）、ウェザーニュース（`@weathernews`）で、40秒に約80件を取得した。すべてにチャンネル ID があった。
+- Twitch: xQc、Kai Cenat、zackrawrr、summit1g で、25秒に36〜158件を取得した。すべてにユーザー ID があった。
+- スーパーチャット、メンバーシップ、YouTube の削除アクションは、実際の配信ではまだ届いていない。解析は記憶と Electron 版に基づくテストデータでのみ確認している。
+
+### 14.3 履歴の取り込み
+
+- この PC の Electron 版の履歴（`%APPDATA%\YuiLiveKit\comments.db`、11MB）を、使い捨ての DB に取り込んだ。72配信、435人、19,664件を0.4秒で取り込み、元のファイルのハッシュは変わらなかった。
+
+### 14.4 見つかった問題と対応
+
+- **ポートの二重使用:** Windows では tokio の `TcpListener::bind` が `SO_REUSEADDR` を付けるため、ほかのアプリが同じポートを使っていても起動できてしまう可能性があった。標準ライブラリで確保してから tokio に渡すようにした（`server::bind`）。ほかのアプリが `SO_REUSEADDR` で後から同じポートを奪うことまでは防いでいない（`SO_EXCLUSIVEADDRUSE` は M2 以降で検討）。
+- **状態の通知:** YouTube は取得のたびに「取得中」を通知していたため、変わったときだけ通知するようにした。
+- **WebSocket の Origin:** ほかのページから `/overlay/ws` に接続できないよう、Origin を確認する。Origin がない接続（OBS 以外のツールなど）は許可している。
+
+### 14.5 未確認のこと
+
+- 設定画面は、Tauri の代わりの模擬で動かしたテストだけで、実際のウィンドウでの操作は確認していない。
+- OBS の実物での表示（M0 のプラグインで追加したソースに、コメントが出ること）。
+- 実際の配信終了の検知（K6）と、YouTube の削除アクションの実データ。
+
+### 14.6 そのほか
+
+- 開発用の起動（`tauri dev`）とインストール版は、同じデータフォルダ（`%APPDATA%\com.suzunayui.yuilivekit`）を使う。
+- インストーラーは 2.3MB、実行ファイルは 6.9MB（M0 は 1.2MB と 4MB）。
+- この PC の Rust には rustfmt と clippy が入っていないため、整形と静的解析はしていない。
