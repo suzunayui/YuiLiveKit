@@ -66,9 +66,9 @@ URL を指定するときは、OBS にブラウザソースを追加して下の
 
 翻訳をオフにするか取得を停止すると、翻訳モデルを終了し、訳文を表示から消します。原文のSQLite保存は既存の仕様です。翻訳結果はメモリ内だけに保持し、DBの構造は変更しません。
 
-配布版はPython、Node.js、Ollamaの事前インストールが不要です（約110MBの軽量版）。既存のYuiLiveKitを終了してからインストーラーを実行してください。
+配布版はPython、Node.js、Ollamaの事前インストールが不要です（約130MBの軽量版）。既存のYuiLiveKitを終了してからインストーラーを実行してください。
 
-開発版: Node.js 24以降とPython 3.13を用意し、npm install、./setup-translation.ps1、npm start。npm run buildで軽量インストーラーを作成します。Electron 41、better-sqlite3 13へ更新しています。npm testとnode scripts/verify-translation.cjsで確認できます。
+開発版: Node.js 24以降とPython 3.13を用意し、npm install、./setup-translation.ps1、npm start。npm run buildで軽量インストーラーを作成します。Electron 45、better-sqlite3 13へ更新しています。npm testとnode scripts/verify-translation.cjsで確認できます。
 
 モデル: https://huggingface.co/google/translategemma-12b-it 。GGUF変換版は bullerwins/translategemma-12b-it-GGUF のリビジョン d7d1d8cc4ff53d4bc883ef33eae3894f07833b63 を固定。llama.cpp b11429 Vulkanを使用します。Gemmaの利用規約・表記はtranslation/Gemma.LICENSE.txtとtranslation/Gemma.NOTICE.txt、ランタイムのMIT表記は配布物のtranslation-runtime/LICENSE-llama.cpp.txtに含めています。
 

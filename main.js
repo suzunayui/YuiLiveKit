@@ -209,7 +209,7 @@ ipcMain.handle('speech:start-with-chat',(_event,enabled)=>{
   fs.writeFileSync(speechSettingsPath(),JSON.stringify(settings));speech.update(settings);return speech.state;
 });
 ipcMain.handle('speech:clear',()=>{speech.clear();return speech.state;});
-ipcMain.handle('speech:copy-url',()=>{const url=`http://127.0.0.1:${OVERLAY_PORT}/subtitles`;clipboard.writeText(url);return url;});
+ipcMain.handle('speech:copy-url',async()=>{const url=`http://127.0.0.1:${OVERLAY_PORT}/subtitles`;await clipboard.writeText(url);return url;});
 let mainWindow = null;
 let boundsSaveTimer = null;
 let currentColors = {
