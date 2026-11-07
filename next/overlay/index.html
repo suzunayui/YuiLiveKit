@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>YuiLiveKit Overlay</title>
+<style>
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  #debug { display: none; font: 48px sans-serif; color: #fff; text-shadow: 0 0 6px #000; padding: 24px; }
+  .debug #debug { display: block; }
+</style>
+</head>
+<body>
+  <!-- M0: nothing is drawn yet. Add ?debug=1 to see that OBS loaded the page. -->
+  <div id="debug">YuiLiveKit</div>
+  <script>
+    if (new URLSearchParams(location.search).get('debug') === '1') document.body.classList.add('debug');
+  </script>
+</body>
+</html>
