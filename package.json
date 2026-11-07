@@ -4,7 +4,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win nsis --x64",
+    "build": "electron-builder --win nsis --x64 && node scripts/write-checksums.cjs",
     "postinstall": "electron-builder install-app-deps",
     "test": "node --test tests/*.test.js",
     "build:translation": "node scripts/build-translation.cjs",
