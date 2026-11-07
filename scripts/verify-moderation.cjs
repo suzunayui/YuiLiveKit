@@ -63,7 +63,7 @@ function exitCodeOfSecondLaunch() {
     let queue = await getJson('/api/participants?videoId=video-a');
     assert.deepEqual(queue.items.filter(item => item.status === 'waiting').map(item => item.id), ['join-1']);
     const post = (url, body) => fetch(base + url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-    await post('/api/participants/status', {videoId: 'video-a', authorKey: 'Player::join-1', status: 'done'});
+    await post('/api/participants/status', {videoId: 'video-a', authorKey: 'channel-player::join-1', status: 'done'});
     queue = await getJson('/api/participants?videoId=video-a');
     assert.deepEqual(queue.items.filter(item => item.status === 'waiting'), [], 'the repeat request does not come back');
 
@@ -74,14 +74,53 @@ function exitCodeOfSecondLaunch() {
       const result = {
         names: db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_comments_%'").all().map(row => row.name),
         recent: plan('SELECT id FROM comments WHERE deleted_ms IS NULL ORDER BY timestamp_ms DESC, rowid DESC LIMIT 500'),
-        author: plan("SELECT author, MIN(timestamp_ms) FROM comments WHERE author IN ('a','b') GROUP BY author"),
+        viewer: plan("SELECT COALESCE(author_channel_id, author), MIN(timestamp_ms) FROM comments WHERE COALESCE(author_channel_id, author) IN ('a','b') GROUP BY COALESCE(author_channel_id, author)"),
       };
       db.close();
       return result;
     }, path.join(profile, 'comments.db'));
-    assert.equal(indexes.names.length, 5);
+    assert.equal(indexes.names.length, 6);
     assert.match(indexes.recent, /idx_comments_timestamp/);
-    assert.match(indexes.author, /idx_comments_author_video/);
+    assert.match(indexes.viewer, /idx_comments_viewer/);
+
+    await store('saveComment', {...comment('old-name', 'Renamer', null, -100000), video_id: 'video-old'});
+    await store('saveComment', comment('linked', 'Renamer', 'channel-renamer', 20));
+    await store('saveComment', comment('renamed', 'New Name', 'channel-renamer', 21));
+    await store('saveComment', comment('same-name', 'Renamer', 'channel-other', 22));
+    await store('saveComment', comment('newcomer', 'Newcomer', 'channel-newcomer', 23));
+    const history = Object.fromEntries((await getJson('/comments')).map(row => [row.id, row]));
+    assert.equal(history.linked.is_first_time, false, 'history saved by name joins the channel');
+    assert.equal(history.renamed.is_first_time, false, 'a new name is the same viewer');
+    assert.equal(history.renamed.last_stream_ago, 1);
+    assert.equal(history['same-name'].is_first_time, true, 'same name on another channel is another viewer');
+    assert.equal(history.newcomer.is_first_time, true);
+
+    const nicoOpened = desktop.waitForEvent('window');
+    await desktop.evaluate(({BrowserWindow}, url) => {
+      new BrowserWindow({show: false, webPreferences: {backgroundThrottling: false}}).loadURL(url);
+    }, base + '/niconico');
+    const nico = await nicoOpened;
+    nico.on('pageerror', error => errors.push(error.message));
+    await nico.waitForLoadState('domcontentloaded');
+    await nico.waitForTimeout(800);
+    await store('saveComment', comment('nico-gone', 'Spam', 'channel-spam', 100000, 'nico flying text'));
+    await nico.waitForFunction(() => [...document.querySelectorAll('.bullet')].some(bullet => bullet.textContent.includes('nico flying text')));
+    await store('markCommentDeleted', 'nico-gone');
+    await nico.waitForFunction(() => ![...document.querySelectorAll('.bullet')].some(bullet => bullet.textContent.includes('nico flying text')));
+
+    assert.equal(await page.locator('#btnObsOpenLaunchers').count(), 1);
+
+    await store('saveComment', comment('ui-join-1', 'Queue', 'channel-queue', 200000, '参加希望A'));
+    await store('saveComment', comment('ui-join-2', 'Queue', 'channel-queue', 200001, '参加希望B'));
+    await page.locator('#mainTabs [data-tab="participants"]').click();
+    await page.waitForFunction(() => document.querySelector('#participantList').textContent.includes('参加希望A'));
+    assert.equal(await page.locator('#participantList').textContent().then(text => text.includes('参加希望B')), false, 'the screen follows the server queue');
+    await post('/api/participants/delete', {videoId: 'video-a', authorKey: 'channel-queue::ui-join-1'});
+    await page.reload();
+    await page.locator('#mainTabs [data-tab="participants"]').click();
+    await page.waitForTimeout(1500);
+    const shown = await page.locator('#participantList').textContent();
+    assert.equal(shown.includes('参加希望A') || shown.includes('参加希望B'), false, 'removed requests stay off the screen after a reload');
 
     assert.equal((await fetch(base + '/supers')).status, 404, 'removed overlay routes are gone');
     assert.equal((await fetch(base + '/api/concurrent')).status, 404);

@@ -702,7 +702,7 @@
 
     <label>
       チャンネルID / @ハンドル / 動画ID
-      <input type="text" id="inputTarget" placeholder="@すずなゆい / UCxxxx / abcdefghijk" />
+      <input type="text" id="inputTarget" placeholder="@ハンドル / チャンネルID / 動画ID / YouTubeのURL" />
     </label>
 
     <div class="buttons">
@@ -1044,6 +1044,7 @@
           <div class="obs-actions">
             <button id="btnObsAddSources">現在シーンへHTML追加</button>
             <button id="btnObsTest" class="secondary">接続・再読み込みテスト</button>
+            <button id="btnObsOpenLaunchers" class="secondary">ドラッグ用HTMLのフォルダを開く</button>
           </div>
           <div id="obsStatus">OBS連携: 未接続</div>
         </div>
@@ -1287,6 +1288,8 @@
     el.addEventListener("change", saveObsSettings);
     el.addEventListener("input", saveObsSettings);
   });
+
+  document.getElementById("btnObsOpenLaunchers").addEventListener("click", () => ipcRenderer.send("launchers:open"));
 
   btnObsAddSources.addEventListener("click", async () => {
     obsStatus.textContent = "OBS連携: HTML追加中…";
@@ -1864,10 +1867,6 @@
     localStorage.setItem(PARTICIPANT_KEY, JSON.stringify(participantMap));
   }
 
-  function participantAuthorKey(msg) {
-    return (msg.author || "").trim() || `anonymous:${buildId(msg)}`;
-  }
-
   function participantsForCurrentVideo() {
     const key = currentParticipantKey();
     if (!participantMap[key]) participantMap[key] = {};
@@ -1878,35 +1877,6 @@
     return Object.values(participantsForCurrentVideo()).sort(
       (a, b) => (a.accepted_ms || 0) - (b.accepted_ms || 0)
     );
-  }
-
-  function upsertParticipant(msg) {
-    if (!msg || msg.kind !== "text") return false;
-    const body = textFromMsg(msg);
-    if (!body.includes(PARTICIPANT_KEYWORD)) return false;
-    const authorId = participantAuthorKey(msg);
-    const id = buildId(msg);
-    const requestKey = `${authorId}::${id}`;
-    const current = participantsForCurrentVideo();
-    if (current[requestKey]) return false;
-    for (const item of Object.values(current)) {
-      const itemAuthorId = item.author_id || item.author_key;
-      if (itemAuthorId === authorId && item.status === "waiting") {
-        return false;
-      }
-    }
-    current[requestKey] = {
-      id,
-      author_key: requestKey,
-      author_id: authorId,
-      author: msg.author || "(no name)",
-      icon: msg.icon || "",
-      text: body,
-      accepted_ms: Number(msg.timestamp_ms) || Date.now(),
-      status: "waiting",
-    };
-    saveParticipantMap();
-    return true;
   }
 
   async function setParticipantStatus(authorKey, status) {
@@ -2572,6 +2542,7 @@
       }
 
       let maxTs = lastAfterMs;
+      let hasNewRequest = false;
       for (const msg of data) {
         if (currentVideoId && msg.video_id && msg.video_id !== currentVideoId) {
           continue;
@@ -2579,7 +2550,7 @@
         const id = buildId(msg);
         if (!commentStore.has(id)) {
           commentStore.set(id, msg);
-          upsertParticipant(msg);
+          if (msg.kind === "text" && textFromMsg(msg).includes(PARTICIPANT_KEYWORD)) hasNewRequest = true;
           if (initialLoaded) {
             highlightStartById.set(id, Date.now());
           }
@@ -2593,6 +2564,7 @@
         initialLoaded = true;
       }
       lastAfterMs = maxTs;
+      if (hasNewRequest) await refreshParticipantMapFromServer();
       const deletedRes = await fetch(DELETED_ENDPOINT);
       if (deletedRes.ok) for (const id of await deletedRes.json()) commentStore.delete(id);
       trimStore();

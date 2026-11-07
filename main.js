@@ -13,15 +13,15 @@ const {
   getRecentComments,
   getSupportComments,
   getDeletedCommentIds,
-  getAuthorFirstSeenMap,
+  viewerKey,
+  getViewerFirstSeenMap,
   getVideoFirstSeenMap,
-  getAuthorVideoFirstSeenRows,
+  getViewerVideoFirstSeenRows,
 } = require("./chatStore");
 
 const {
   startLiveChat,
   stopLiveChat,
-  getComments,
 } = require("./youtubeChat");
 
 const {LocalTranslation} = require('./translation/local-translation');
@@ -484,8 +484,7 @@ function participantVideoKey(videoId) {
 }
 
 function ohayoAuthorKey(msg) {
-  const author = typeof msg?.author === "string" ? msg.author.trim() : "";
-  return author || `anonymous:${msg?.id || msg?.timestamp_ms || Date.now()}`;
+  return viewerKey(msg).trim() || `anonymous:${msg?.id || msg?.timestamp_ms || Date.now()}`;
 }
 
 function getParticipantBucket(videoId) {
@@ -884,43 +883,43 @@ function createOverlayServer() {
           if (LIM) {
             out = out.slice(-LIM);
           }
-          const authorMap = getAuthorFirstSeenMap(out.map((r) => r.author));
+          const viewers = out.map(viewerKey);
+          const firstSeenByViewer = getViewerFirstSeenMap(viewers);
           const videoFirstMap = getVideoFirstSeenMap();
           const videoIndexMap = new Map(
             Array.from(videoFirstMap.entries())
               .sort((a, b) => a[1] - b[1])
               .map(([videoId], idx) => [videoId, idx])
           );
-          const authorVideoRows = getAuthorVideoFirstSeenRows(
-            out.map((r) => r.author)
-          );
-          const authorVideoMap = new Map();
-          for (const row of authorVideoRows) {
-            if (!row || !row.author || !row.video_id) continue;
+          const viewerVideoRows = getViewerVideoFirstSeenRows(viewers);
+          const viewerVideoMap = new Map();
+          for (const row of viewerVideoRows) {
+            if (!row || !row.viewer || !row.video_id) continue;
             const idx = videoIndexMap.get(row.video_id);
             if (idx == null) continue;
-            const list = authorVideoMap.get(row.author) || [];
+            const list = viewerVideoMap.get(row.viewer) || [];
             list.push({
               videoId: row.video_id,
               index: idx,
               firstTs: Number(row.first_ts) || 0,
             });
-            authorVideoMap.set(row.author, list);
+            viewerVideoMap.set(row.viewer, list);
           }
-          for (const list of authorVideoMap.values()) {
+          for (const list of viewerVideoMap.values()) {
             list.sort((a, b) => a.index - b.index);
           }
           const withMeta = out.map((r) => {
             const ts = Number(r.timestamp_ms) || 0;
+            const viewer = viewerKey(r);
             const isFirst =
-              !!r.author && ts === (authorMap.get(r.author) || 0);
+              !!viewer && ts === (firstSeenByViewer.get(viewer) || 0);
             let lastStreamFirstTs = null;
             let lastStreamAgo = null;
             const currentIndex = r.video_id
               ? videoIndexMap.get(r.video_id)
               : null;
-            if (!isFirst && currentIndex != null && r.author) {
-              const list = authorVideoMap.get(r.author) || [];
+            if (!isFirst && currentIndex != null && viewer) {
+              const list = viewerVideoMap.get(viewer) || [];
               for (let i = list.length - 1; i >= 0; i -= 1) {
                 const entry = list[i];
                 if (entry.index < currentIndex) {
@@ -944,74 +943,7 @@ function createOverlayServer() {
     } catch (e) {
       console.warn("getRecentComments error:", e?.message || e);
     }
-    // DB が空 / 読み込み失敗時はインメモリを返す
-    const fallback = getComments();
-    let trimmed = LIM ? fallback.slice(-LIM) : fallback;
-    if (afterMs != null) {
-      trimmed = trimmed.filter((r) => (r.timestamp_ms || 0) > afterMs);
-    }
-    const uniq = new Map();
-    for (const r of trimmed) {
-      const key = `${r.timestamp_ms || 0}_${r.author || ""}_${r.text || ""}`;
-      if (!uniq.has(key)) uniq.set(key, r);
-    }
-    const fallbackRows = Array.from(uniq.values());
-    const authorMap = getAuthorFirstSeenMap(fallbackRows.map((r) => r.author));
-    const videoFirstMap = getVideoFirstSeenMap();
-    const videoIndexMap = new Map(
-      Array.from(videoFirstMap.entries())
-        .sort((a, b) => a[1] - b[1])
-        .map(([videoId], idx) => [videoId, idx])
-    );
-    const authorVideoRows = getAuthorVideoFirstSeenRows(
-      fallbackRows.map((r) => r.author)
-    );
-    const authorVideoMap = new Map();
-    for (const row of authorVideoRows) {
-      if (!row || !row.author || !row.video_id) continue;
-      const idx = videoIndexMap.get(row.video_id);
-      if (idx == null) continue;
-      const list = authorVideoMap.get(row.author) || [];
-      list.push({
-        videoId: row.video_id,
-        index: idx,
-        firstTs: Number(row.first_ts) || 0,
-      });
-      authorVideoMap.set(row.author, list);
-    }
-    for (const list of authorVideoMap.values()) {
-      list.sort((a, b) => a.index - b.index);
-    }
-    const withMeta = fallbackRows.map((r) => {
-      const ts = Number(r.timestamp_ms) || 0;
-      const isFirst =
-        !!r.author && ts === (authorMap.get(r.author) || 0);
-      let lastStreamFirstTs = null;
-      let lastStreamAgo = null;
-      const currentIndex = r.video_id
-        ? videoIndexMap.get(r.video_id)
-        : null;
-      if (!isFirst && currentIndex != null && r.author) {
-        const list = authorVideoMap.get(r.author) || [];
-        for (let i = list.length - 1; i >= 0; i -= 1) {
-          const entry = list[i];
-          if (entry.index < currentIndex) {
-            lastStreamFirstTs = entry.firstTs || null;
-            lastStreamAgo = currentIndex - entry.index;
-            break;
-          }
-        }
-      }
-      return {
-        ...r,
-        is_first_time: isFirst,
-        last_stream_first_ts: lastStreamFirstTs,
-        last_stream_ago: lastStreamAgo,
-      };
-    });
-    syncParticipantsFromComments(withMeta);
-    syncOhayoFromComments(withMeta);
-    res.json(commentTranslation ? commentTranslation.decorate(withMeta) : withMeta);
+    res.json([]);
   });
 
   // オーバーレイ設定を取得するエンドポイント
@@ -1086,7 +1018,7 @@ function createObsLauncherFiles() {
 /**
  * 設定用ウィンドウ
  */
-function createMainWindow(launchersDir) {
+function createMainWindow() {
   const loadWindowState = () => {
     try {
       const statePath = path.join(app.getPath("userData"), "window-state.json");
@@ -1153,13 +1085,6 @@ function createMainWindow(launchersDir) {
 
   mainWindow.on("resize", scheduleSave);
   mainWindow.on("move", scheduleSave);
-
-  // レンダラに「ランチャーフォルダのパス」を通知
-  mainWindow.webContents.on("did-finish-load", () => {
-    if (isWindowAlive()) {
-      mainWindow.webContents.send("launchers:path", launchersDir);
-    }
-  });
 }
 
 // ==============================
@@ -1300,10 +1225,10 @@ app.whenReady().then(() => {
   createOverlayServer();
 
   // 起動時にランチャーHTMLを生成
-  const launchersDir = createObsLauncherFiles();
+  createObsLauncherFiles();
 
   // 設定画面を表示
-  createMainWindow(launchersDir);
+  createMainWindow();
 });
 
 app.on("before-quit", () => {
@@ -1331,7 +1256,6 @@ app.on("window-all-closed", () => {
 
 app.on("activate", () => {
   if (mainWindow === null) {
-    const launchersDir = path.join(app.getPath("userData"), "obs-launchers");
-    createMainWindow(launchersDir);
+    createMainWindow();
   }
 });

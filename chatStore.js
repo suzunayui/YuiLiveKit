@@ -12,6 +12,7 @@ function onCommentSaved(listener) {
 
 let db = null;
 let insertStmt = null;
+let linkAuthorStmt = null;
 let dbPath = null;
 
 const DEFAULT_LIMIT = 50;
@@ -83,6 +84,7 @@ function ensureIndexes() {
        CREATE INDEX IF NOT EXISTS idx_comments_author_video ON comments(author, video_id, timestamp_ms);
        CREATE INDEX IF NOT EXISTS idx_comments_video ON comments(video_id, timestamp_ms);
        CREATE INDEX IF NOT EXISTS idx_comments_channel ON comments(author_channel_id, video_id);
+       CREATE INDEX IF NOT EXISTS idx_comments_viewer ON comments(COALESCE(author_channel_id, author), video_id, timestamp_ms);
        CREATE INDEX IF NOT EXISTS idx_comments_deleted ON comments(deleted_ms) WHERE deleted_ms IS NOT NULL;`
     );
   } catch (err) {
@@ -132,6 +134,11 @@ function initChatStore(baseDir) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
+  // Comments saved before channel IDs were recorded are linked by name when that viewer returns.
+  linkAuthorStmt = db.prepare(
+    "UPDATE comments SET author_channel_id = ? WHERE author = ? AND author_channel_id IS NULL"
+  );
+
   return dbPath;
 }
 
@@ -159,6 +166,9 @@ function saveComment(msg) {
       msg.is_owner ? 1 : 0,
       msg.author_channel_id || null
     );
+    if (result.changes > 0 && msg.author_channel_id && msg.author) {
+      linkAuthorStmt.run(msg.author_channel_id, msg.author);
+    }
     if (result.changes > 0) commentEvents.emit('comment', msg);
     return result.changes > 0;
   } catch (err) {
@@ -183,7 +193,7 @@ function getRecentComments(limit = DEFAULT_LIMIT, filter = {}) {
       }
       const unlimited=filter.supportOnly&&limit===null;
       if(!unlimited)params.push(lim);
-      const sql = `SELECT id, video_id, timestamp_ms, timestamp, author, text, kind, amount, amount_text, icon, parts_json, colors_json, is_member, is_moderator, is_owner
+      const sql = `SELECT id, video_id, timestamp_ms, timestamp, author, text, kind, amount, amount_text, icon, parts_json, colors_json, is_member, is_moderator, is_owner, author_channel_id
                    FROM comments
                    ${where}
                    ORDER BY timestamp_ms DESC, rowid DESC
@@ -218,6 +228,7 @@ function getRecentComments(limit = DEFAULT_LIMIT, filter = {}) {
           is_member: r.is_member === 1,
           is_moderator: r.is_moderator === 1,
           is_owner: r.is_owner === 1,
+          author_channel_id: r.author_channel_id,
         };
       });
       resolve(result);
@@ -268,31 +279,56 @@ function getSupportComments(videoId) {
   return getRecentComments(null,{supportOnly:true,videoId});
 }
 
-function getAuthorFirstSeenMap(authors) {
-  if (!db) return new Map();
-  const list = Array.isArray(authors)
-    ? Array.from(new Set(authors.map((a) => (a || "").trim()).filter(Boolean)))
+/** A viewer is their channel ID, or their name on comments that have none. */
+function viewerKey(row) {
+  return row?.author_channel_id || row?.author || "";
+}
+
+function uniqueViewers(viewers) {
+  return Array.isArray(viewers)
+    ? Array.from(new Set(viewers.map((v) => (v || "").trim()).filter(Boolean)))
     : [];
+}
+
+function getViewerFirstSeenMap(viewers) {
+  if (!db) return new Map();
+  const list = uniqueViewers(viewers);
   if (list.length === 0) return new Map();
   const placeholders = list.map(() => "?").join(",");
   try {
     const rows = db
       .prepare(
-        `SELECT author, MIN(timestamp_ms) AS first_ts
+        `SELECT COALESCE(author_channel_id, author) AS viewer, MIN(timestamp_ms) AS first_ts
          FROM comments
-         WHERE author IN (${placeholders})
-         GROUP BY author`
+         WHERE COALESCE(author_channel_id, author) IN (${placeholders})
+         GROUP BY COALESCE(author_channel_id, author)`
       )
       .all(...list);
-    const map = new Map();
-    for (const r of rows) {
-      if (!r || !r.author) continue;
-      map.set(r.author, Number(r.first_ts) || 0);
-    }
-    return map;
+    return new Map(rows.map((r) => [r.viewer, Number(r.first_ts) || 0]));
   } catch (err) {
-    console.warn("getAuthorFirstSeenMap sqlite error:", err.message || err);
+    console.warn("getViewerFirstSeenMap sqlite error:", err.message || err);
     return new Map();
+  }
+}
+
+function getViewerVideoFirstSeenRows(viewers) {
+  if (!db) return [];
+  const list = uniqueViewers(viewers);
+  if (list.length === 0) return [];
+  const placeholders = list.map(() => "?").join(",");
+  try {
+    return db
+      .prepare(
+        `SELECT COALESCE(author_channel_id, author) AS viewer, video_id, MIN(timestamp_ms) AS first_ts
+         FROM comments
+         WHERE COALESCE(author_channel_id, author) IN (${placeholders})
+           AND video_id IS NOT NULL AND video_id != ''
+         GROUP BY COALESCE(author_channel_id, author), video_id`
+      )
+      .all(...list);
+  } catch (err) {
+    console.warn("getViewerVideoFirstSeenRows sqlite error:", err.message || err);
+    return [];
   }
 }
 
@@ -319,29 +355,6 @@ function getVideoFirstSeenMap() {
   }
 }
 
-function getAuthorVideoFirstSeenRows(authors) {
-  if (!db) return [];
-  const list = Array.isArray(authors)
-    ? Array.from(new Set(authors.map((a) => (a || "").trim()).filter(Boolean)))
-    : [];
-  if (list.length === 0) return [];
-  const placeholders = list.map(() => "?").join(",");
-  try {
-    return db
-      .prepare(
-        `SELECT author, video_id, MIN(timestamp_ms) AS first_ts
-         FROM comments
-         WHERE author IN (${placeholders})
-           AND video_id IS NOT NULL AND video_id != ''
-         GROUP BY author, video_id`
-      )
-      .all(...list);
-  } catch (err) {
-    console.warn("getAuthorVideoFirstSeenRows sqlite error:", err.message || err);
-    return [];
-  }
-}
-
 function closeChatStore() {
   if (db) {
     try {
@@ -350,6 +363,7 @@ function closeChatStore() {
     db = null;
   }
   insertStmt = null;
+  linkAuthorStmt = null;
 }
 
 module.exports = {
@@ -358,9 +372,10 @@ module.exports = {
   saveComment,
   getRecentComments,
   getSupportComments,
-  getAuthorFirstSeenMap,
+  viewerKey,
+  getViewerFirstSeenMap,
   getVideoFirstSeenMap,
-  getAuthorVideoFirstSeenRows,
+  getViewerVideoFirstSeenRows,
   markCommentDeleted,
   markAuthorCommentsDeleted,
   getDeletedCommentIds,

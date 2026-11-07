@@ -38,25 +38,61 @@ function sleep(ms) {
 // YouTube 関連
 // ==============================
 
+const VIDEO_ID = /^[\w-]{11}$/;
+const CHANNEL_PATH_PREFIXES = ["channel", "c", "user"];
+const VIDEO_PATH_PREFIXES = ["live", "shorts", "embed"];
+
+function videoTarget(id) {
+  if (!VIDEO_ID.test(id || "")) throw new Error("URLから動画IDを読み取れませんでした");
+  return { videoId: id };
+}
+
+function parseYouTubeUrl(text) {
+  let url;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new Error("URLを読み取れませんでした");
+  }
+  const host = url.hostname.toLowerCase().replace(/^(www|m|music)\./, "");
+  const segments = url.pathname.split("/").filter(Boolean);
+  if (host === "youtu.be") return videoTarget(segments[0]);
+  if (host !== "youtube.com") throw new Error("YouTubeのURLを入力してください");
+
+  if (segments[0] === "watch" || segments[0] === "live_chat") {
+    return videoTarget(url.searchParams.get("v"));
+  }
+  if (VIDEO_PATH_PREFIXES.includes(segments[0])) return videoTarget(segments[1]);
+  if (segments[0]?.startsWith("@")) return { livePath: `/${segments[0]}` };
+  if (CHANNEL_PATH_PREFIXES.includes(segments[0]) && segments[1]) {
+    return { livePath: `/${segments[0]}/${segments[1]}` };
+  }
+  throw new Error("このURLからは配信を探せません。動画かチャンネルのURLを入力してください");
+}
+
 /**
- * 入力が:
- *  ・videoId → そのまま返す（11文字）
- *  ・@handle → /live の videoId を抽出
- *  ・チャンネルID → /live の videoId を抽出
- *
+ * 入力を動画ID、またはライブ配信を探すチャンネルのパスに変換する。
+ * 動画ID / @handle / チャンネルID / YouTube の URL を受け付ける。
+ */
+function parseChatTarget(inputStr) {
+  const value = String(inputStr).trim();
+  if (/^https?:\/\//i.test(value)) return parseYouTubeUrl(value);
+  if (/^((www|m|music)\.)?youtube\.com\/|^youtu\.be\//i.test(value)) {
+    return parseYouTubeUrl(`https://${value}`);
+  }
+  if (value.startsWith("@")) return { livePath: `/${value}` };
+  if (value.length === 11) return { videoId: value };
+  return { livePath: `/channel/${value}` };
+}
+
+/**
  * 配信中でない場合は null を返す。
  */
 async function resolveVideoId(inputStr) {
-  if (inputStr.length === 11 && !inputStr.startsWith("@")) {
-    return inputStr; // videoId
-  }
+  const target = parseChatTarget(inputStr);
+  if (target.videoId) return target.videoId;
 
-  let url;
-  if (inputStr.startsWith("@")) {
-    url = `https://www.youtube.com/${inputStr}/live`;
-  } else {
-    url = `https://www.youtube.com/channel/${inputStr}/live`;
-  }
+  const url = `https://www.youtube.com${target.livePath}/live`;
 
   const resp = await fetch(url, {
     headers: {
@@ -226,8 +262,9 @@ function runsToPlain(runs) {
   return runs.map((r) => r.text || "").join("");
 }
 
+// 表示の金額帯は円が基準なので、為替レートのない外貨は金額なしとして扱う。
 function parseAmountToInt(text) {
-  if (!text) return null;
+  if (!text || !/^\s*(JP)?[¥￥]/.test(text)) return null;
   const m = text.match(/([\d,]+)/);
   if (!m) return null;
   const digits = m[1].replace(/,/g, "");
@@ -726,4 +763,5 @@ module.exports = {
   stopLiveChat,
   getComments,
   resolveVideoId,
+  parseChatTarget,
 };

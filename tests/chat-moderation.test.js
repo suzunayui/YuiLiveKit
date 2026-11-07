@@ -13,13 +13,68 @@ function collector(respond, store = {}) {
   const sleepers = [];
   const context = vm.createContext({
     require: () => ({saveComment() {}, ...store}), module: {exports: {}},
-    console: {log() {}, error() {}}, Error,
+    console: {log() {}, error() {}}, Error, URL,
     fetch: async url => url.includes('/watch?') ? {ok: true, text: async () => html} : {ok: true, json: async () => respond()},
     setTimeout: (callback, delay) => sleepers.push({callback, delay}),
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../youtubeChat.js'), 'utf8'), context);
   return {...context.module.exports, sleepers};
 }
+const parse = input => {
+  const target = collector(() => liveResponse()).parseChatTarget(input);
+  return JSON.parse(JSON.stringify(target));
+};
+
+test('accepts video and channel URLs along with the existing inputs', () => {
+  const video = {videoId: 'abc_DEF-123'};
+  for (const input of [
+    'https://www.youtube.com/watch?v=abc_DEF-123',
+    'https://www.youtube.com/watch?list=PL1&v=abc_DEF-123&t=10s',
+    'https://m.youtube.com/watch?v=abc_DEF-123',
+    'youtube.com/watch?v=abc_DEF-123',
+    'https://youtu.be/abc_DEF-123?si=share',
+    'youtu.be/abc_DEF-123',
+    'https://www.youtube.com/live/abc_DEF-123?feature=share',
+    'https://www.youtube.com/shorts/abc_DEF-123',
+    'https://www.youtube.com/live_chat?is_popout=1&v=abc_DEF-123',
+    '  abc_DEF-123  ',
+  ]) assert.deepEqual(parse(input), video, input);
+
+  assert.deepEqual(parse('https://www.youtube.com/@yui/live'), {livePath: '/@yui'});
+  assert.deepEqual(parse('https://www.youtube.com/@yui'), {livePath: '/@yui'});
+  assert.deepEqual(parse('@yui'), {livePath: '/@yui'});
+  assert.deepEqual(parse('https://www.youtube.com/channel/UCabc/streams'), {livePath: '/channel/UCabc'});
+  assert.deepEqual(parse('https://www.youtube.com/c/yui'), {livePath: '/c/yui'});
+  assert.deepEqual(parse('UCxxxxxxxxxxxxxxxxxxxxxx'), {livePath: '/channel/UCxxxxxxxxxxxxxxxxxxxxxx'});
+});
+
+test('explains URLs that cannot lead to a stream', () => {
+  const chat = collector(() => liveResponse());
+  for (const [input, message] of [
+    ['https://example.com/watch?v=abc_DEF-123', /YouTubeのURL/],
+    ['https://www.youtube.com/watch', /動画ID/],
+    ['https://www.youtube.com/watch?v=short', /動画ID/],
+    ['https://www.youtube.com/feed/subscriptions', /配信を探せません/],
+    ['https://', /読み取れません/],
+  ]) assert.throws(() => chat.parseChatTarget(input), message, input);
+});
+
+const paidItem = amount => ({addChatItemAction: {item: {liveChatPaidMessageRenderer: {
+  id: amount, authorName: {simpleText: 'Viewer'}, timestampUsec: '1000000', purchaseAmountText: {simpleText: amount}, message: {runs: [{text: 'thanks'}]},
+}}}});
+
+test('only yen amounts count toward the yen-based tiers', async () => {
+  const saved = [];
+  let requests = 0;
+  const amounts = ['¥1,000', '￥500', 'JP¥2,000', '$5.00', 'CA$5.00', 'CN¥50', '€1.000,50'];
+  const chat = collector(() => ++requests === 2 ? liveResponse(amounts.map(paidItem)) : liveResponse(), {saveComment: msg => saved.push(msg)});
+  const run = chat.startLiveChat('abcdefghijk');
+  await tick();
+  assert.deepEqual(saved.map(msg => msg.amount), [1000, 500, 2000, null, null, null, null]);
+  assert.deepEqual(saved.map(msg => msg.amount_text), amounts);
+  chat.stopLiveChat(); chat.sleepers.shift().callback(); await run;
+});
+
 const textItem = (id, channel) => ({addChatItemAction: {item: {liveChatTextMessageRenderer: {
   id, authorExternalChannelId: channel, authorName: {simpleText: 'Viewer'}, timestampUsec: '1000000', message: {runs: [{text: 'hi'}]},
 }}}});
@@ -100,6 +155,38 @@ test('someone already handled can request again with a new comment', () => {
   bucket.get('Viewer::first').status = 'done';
   assert.equal(acceptParticipantComment(bucket, request('later')), true);
   assert.equal(bucket.get('Viewer::later').status, 'waiting');
+});
+
+test('viewers with the same name but different channels queue separately', () => {
+  const bucket = new Map();
+  replay(bucket, [{...request('a'), author_channel_id: 'UC1'}, {...request('b'), author_channel_id: 'UC2'}]);
+  assert.deepEqual(statuses(bucket), [['a', 'waiting'], ['b', 'waiting']]);
+});
+
+test('a renamed viewer with a channel ID is still one person', () => {
+  const bucket = new Map();
+  replay(bucket, [{...request('a', 'Old'), author_channel_id: 'UC1'}, {...request('b', 'New'), author_channel_id: 'UC1'}]);
+  assert.deepEqual(statuses(bucket), [['a', 'waiting'], ['b', 'deleted']]);
+});
+
+test('a handled comment stays handled after its author gets linked to a channel ID', () => {
+  const bucket = new Map();
+  replay(bucket, [request('a')]);
+  bucket.get('Viewer::a').status = 'done';
+  assert.equal(acceptParticipantComment(bucket, {...request('a'), author_channel_id: 'UC1'}), false);
+  assert.equal(bucket.size, 1);
+});
+
+test('state restored from disk also remembers its comments', () => {
+  const bucket = new Map([['Viewer::a', {id: 'a', author_key: 'Viewer::a', author_id: 'Viewer', status: 'done'}]]);
+  assert.equal(acceptParticipantComment(bucket, {...request('a'), author_channel_id: 'UC1'}), false);
+});
+
+test('someone waiting under their name is matched once linked to a channel ID', () => {
+  const bucket = new Map();
+  replay(bucket, [request('a')]);
+  replay(bucket, [{...request('b'), author_channel_id: 'UC1'}]);
+  assert.equal(bucket.get('UC1::b').status, 'deleted');
 });
 
 test('ignores ordinary comments and non-text messages', () => {

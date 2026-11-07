@@ -1,9 +1,23 @@
 // Decides whether a chat comment joins the participant queue.
 const PARTICIPANT_KEYWORD = "参加希望";
 
+// Comment ids per queue. Ids decide what was already seen, because a comment's
+// request key changes once its author gets linked to a channel ID.
+const seenIdsByBucket = new WeakMap();
+
+function seenIdsOf(bucket) {
+  if (!seenIdsByBucket.has(bucket)) {
+    seenIdsByBucket.set(bucket, new Set(Array.from(bucket.values(), (item) => String(item.id))));
+  }
+  return seenIdsByBucket.get(bucket);
+}
+
+function authorNameOf(msg) {
+  return typeof msg?.author === "string" ? msg.author.trim() : "";
+}
+
 function authorIdOf(msg) {
-  const author = typeof msg?.author === "string" ? msg.author.trim() : "";
-  return author || `anonymous:${msg?.id || msg?.timestamp_ms || Date.now()}`;
+  return msg?.author_channel_id || authorNameOf(msg) || `anonymous:${msg?.id || msg?.timestamp_ms || Date.now()}`;
 }
 
 /**
@@ -19,16 +33,21 @@ function acceptParticipantComment(bucket, msg) {
   const authorId = authorIdOf(msg);
   const id = String(msg.id || `${msg.timestamp_ms || 0}_${msg.author || ""}_${text}`);
   const requestKey = `${authorId}::${id}`;
-  if (bucket.has(requestKey)) return false;
+  const seenIds = seenIdsOf(bucket);
+  if (bucket.has(requestKey) || seenIds.has(id)) return false;
 
+  // Requests saved before channel IDs were recorded use the author's name.
+  const authorName = authorNameOf(msg);
   let alreadyWaiting = false;
   for (const item of bucket.values()) {
-    if ((item.author_id || item.author_key) === authorId && item.status === "waiting") {
+    const itemAuthorId = item.author_id || item.author_key;
+    if ((itemAuthorId === authorId || itemAuthorId === authorName) && item.status === "waiting") {
       alreadyWaiting = true;
       break;
     }
   }
 
+  seenIds.add(id);
   const acceptedMs = Number(msg.timestamp_ms) || Date.now();
   bucket.set(requestKey, {
     id,

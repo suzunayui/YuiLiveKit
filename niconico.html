@@ -224,6 +224,7 @@ function spawnFallingEmoji(msg) {
         let lastTime = null;
 
         function step(timestamp) {
+            if (!div.isConnected) return;
             if (lastTime === null) lastTime = timestamp;
             const dt = (timestamp - lastTime) / 1000;
             lastTime = timestamp;
@@ -262,6 +263,7 @@ function spawnFallingEmoji(msg) {
 
         requestAnimationFrame(step);
     });
+    return div;
 }
 
 /* ------------------------------------------------------------
@@ -326,6 +328,7 @@ function spawnScrollingBullet(msg, { onComplete, color } = {}) {
         let lastTime = null;
 
         function step(timestamp) {
+            if (!div.isConnected) return;
             if (lastTime === null) lastTime = timestamp;
             const dt = (timestamp - lastTime) / 1000;
             lastTime = timestamp;
@@ -346,12 +349,25 @@ function spawnScrollingBullet(msg, { onComplete, color } = {}) {
 
         requestAnimationFrame(step);
     });
+    return div;
 }
 
 /* ------------------------------------------------------------
    コメント取得（/comments → 弾幕に流す）
    ★ 初めて「コメントが来たバッチ」は履歴扱いでスキップ
 ------------------------------------------------------------ */
+const activeBullets = new Map();
+
+async function removeDeletedBullets() {
+    const res = await fetch("/api/comments/deleted");
+    for (const id of await res.json()) {
+        activeBullets.get(id)?.remove();
+    }
+    for (const [id, div] of activeBullets) {
+        if (!div.isConnected) activeBullets.delete(id);
+    }
+}
+
 async function fetchComments() {
     try {
         const res = await fetch(`/comments?after=${sinceTs}`);
@@ -374,19 +390,20 @@ async function fetchComments() {
                 const hasChisai = containsChisai(msg);
 
                 if (isShortEmojiOnly(msg)) {
-                    spawnFallingEmoji(msg);
+                    activeBullets.set(id, spawnFallingEmoji(msg));
                 } else {
-                    spawnScrollingBullet(msg, {
+                    activeBullets.set(id, spawnScrollingBullet(msg, {
                         onComplete: hasChisai
                             ? () => spawnScrollingBullet({ text: "ちっちゃくないよ💢" }, { color: "#ff0000" })
                             : undefined,
-                    });
+                    }));
                 }
             }
         }
 
         // 次回以降は今回の最新 timestamp_ms より新しいものだけ取得する
         sinceTs = maxTs;
+        await removeDeletedBullets();
 
     } catch (err) {
         console.error("fetch error:", err);
