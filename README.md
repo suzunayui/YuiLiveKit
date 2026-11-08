@@ -14,7 +14,7 @@ YouTube のコメントを **OBS に表示できるオーバーレイツール**
 
 ダウンロードするファイル名の例：
 
-YuiLiveKit-Setup-2026.1107.1.exe
+YuiLiveKit-Setup-2026.1108.1.exe
 
 ### YouTubeOverlay からの移行
 

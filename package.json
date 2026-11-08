@@ -1,6 +1,6 @@
 {
   "name": "yui-live-kit",
-  "version": "2026.1107.1",
+  "version": "2026.1108.1",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
