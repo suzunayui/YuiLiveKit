@@ -3,3 +3,4 @@ src-tauri/target/
 src-tauri/gen/
 obs-plugin/build/
 obs-plugin/obs-sdk/
+release/

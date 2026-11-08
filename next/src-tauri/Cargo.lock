@@ -5745,7 +5745,7 @@ dependencies = [
 
 [[package]]
 name = "yui-live-kit"
-version = "2026.1108.1"
+version = "2026.1108.2"
 dependencies = [
  "axum",
  "futures-util",
