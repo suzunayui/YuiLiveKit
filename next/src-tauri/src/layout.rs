@@ -57,6 +57,18 @@ pub struct Ohayo {
     pub label: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Subtitles {
+    #[serde(flatten)]
+    pub area: Area,
+    pub english_size: i64,
+    pub duration: f64,
+    pub alignment: String,
+    pub text_color: String,
+    pub english_color: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Layout {
@@ -64,6 +76,7 @@ pub struct Layout {
     pub niconico: Niconico,
     pub participants: Participants,
     pub ohayo: Ohayo,
+    pub subtitles: Subtitles,
 }
 
 impl Default for Area {
@@ -111,6 +124,19 @@ impl Default for Ohayo {
     }
 }
 
+impl Default for Subtitles {
+    fn default() -> Self {
+        Self {
+            area: Area { visible: true, x: 160, y: 800, width: 1600, height: 250, font_size: 46 },
+            english_size: 32,
+            duration: 10.0,
+            alignment: "center".into(),
+            text_color: "#ffffff".into(),
+            english_color: "#ffffff".into(),
+        }
+    }
+}
+
 fn color(value: &str, fallback: &str) -> String {
     let hex = value.strip_prefix('#').unwrap_or("");
     let valid = matches!(hex.len(), 3 | 4 | 6 | 8) && hex.bytes().all(|b| b.is_ascii_hexdigit());
@@ -135,7 +161,13 @@ impl Layout {
     /// Keeps every value in range, so a saved layout can never break the overlay page.
     pub fn sanitized(mut self) -> Self {
         let defaults = Layout::default();
-        for area in [&mut self.comments.area, &mut self.niconico.area, &mut self.participants.area, &mut self.ohayo.area] {
+        for area in [
+            &mut self.comments.area,
+            &mut self.niconico.area,
+            &mut self.participants.area,
+            &mut self.ohayo.area,
+            &mut self.subtitles.area,
+        ] {
             area.clamp();
         }
         self.comments.max = self.comments.max.clamp(1, 50);
@@ -146,6 +178,13 @@ impl Layout {
         self.niconico.color = color(&self.niconico.color, &defaults.niconico.color);
         self.participants.title = text(&self.participants.title, 40);
         self.ohayo.label = text(&self.ohayo.label, 40);
+        self.subtitles.english_size = self.subtitles.english_size.clamp(10, 200);
+        self.subtitles.duration = if self.subtitles.duration.is_finite() { self.subtitles.duration.clamp(2.0, 60.0) } else { 10.0 };
+        if !["left", "center", "right"].contains(&self.subtitles.alignment.as_str()) {
+            self.subtitles.alignment = "center".into();
+        }
+        self.subtitles.text_color = color(&self.subtitles.text_color, &defaults.subtitles.text_color);
+        self.subtitles.english_color = color(&self.subtitles.english_color, &defaults.subtitles.english_color);
         self
     }
 }

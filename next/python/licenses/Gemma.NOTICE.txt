@@ -1,0 +1,6 @@
+Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms
+
+TranslateGemma 12B Q4_K_M model weights are downloaded separately from:
+https://huggingface.co/bullerwins/translategemma-12b-it-GGUF
+The Gemma Terms of Use and prohibited use policy apply to these weights.
+Original model: https://huggingface.co/google/translategemma-12b-it

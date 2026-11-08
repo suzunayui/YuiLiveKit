@@ -16,6 +16,8 @@ let participants = [];
 let layouts = {};
 let overlayUrl = '';
 let viewers = { names: {}, blocked: [] };
+const translationsByKey = new Map();
+let media = null;
 let speakers = [];
 
 function remember(key, value) {
@@ -98,6 +100,9 @@ function renderItem(message) {
   if (message.amount_text) header.append(element('span', 'badge last', message.amount_text));
   item.append(header, messageText(message));
   item.append(viewerActions(message));
+  const translated = element('span', 'text translation', translationsByKey.get(message.key) || '');
+  translated.hidden = !translationsByKey.has(message.key);
+  item.append(translated);
   return item;
 }
 
@@ -313,6 +318,8 @@ const WIDGETS = {
   niconico: { label: 'ニコニコ風', extra: [['duration', '流れる秒数', 'number'], ['color', '文字の色', 'text']] },
   participants: { label: '参加管理', extra: [['horizontal', '横に並べる', 'checkbox'], ['title', '見出し', 'text']] },
   ohayo: { label: 'おはよう', extra: [['label', '表示する言葉', 'text']] },
+  subtitles: { label: '字幕', extra: [['english_size', '英語の文字の大きさ', 'number'], ['duration', '表示する秒数', 'number'],
+    ['alignment', '寄せ（left / center / right）', 'text'], ['text_color', '日本語の色', 'text'], ['english_color', '英語の色', 'text']] },
 };
 const AREA_FIELDS = [['visible', '表示する', 'checkbox'], ['x', 'X', 'number'], ['y', 'Y', 'number'],
   ['width', '幅', 'number'], ['height', '高さ', 'number'], ['font_size', '文字の大きさ', 'number']];
@@ -353,6 +360,7 @@ function renderPreview() {
   preview.replaceChildren();
   for (const [key, widget] of Object.entries(WIDGETS)) {
     const area = editing[key];
+    if (!area) continue;
     const box = element('div', 'box', widget.label);
     box.classList.toggle('off', !area.visible);
     box.classList.toggle('selected', key === selected);
@@ -392,6 +400,7 @@ function renderWidgetForm() {
   const form = $('widget-form');
   form.replaceChildren(element('h3', '', `${WIDGETS[selected].label} の設定（プレビューの枠をクリックで切り替え）`));
   const target = editing[selected];
+  if (!target) return;
   for (const [field, label, type] of [...AREA_FIELDS, ...WIDGETS[selected].extra]) {
     const input = element('input');
     input.type = type;
@@ -598,6 +607,91 @@ function renderEmoji(list) {
   if (!list.length) box.append(element('li', '', 'まだ絵文字は出ていません。'));
 }
 
+// --- Subtitles and translation ---------------------------------------------------------
+
+function options(select, list, value) {
+  select.replaceChildren(...list.map(([v, label]) => { const o = element('option', '', label); o.value = v; return o; }));
+  if (list.some(([v]) => String(v) === String(value))) select.value = String(value);
+}
+
+function renderRuntime(runtime) {
+  $('runtime-status').textContent = runtime.status;
+  const label = (done, text) => (done ? `${text}（導入済み）` : text);
+  $('install-speech').textContent = label(runtime.speech, '音声字幕を導入（約100MB）');
+  $('install-cuda').textContent = label(runtime.cuda, 'GPU 高速化を導入（約1.3GB）');
+  $('install-translation').textContent = label(runtime.translation, 'コメント翻訳を導入');
+  $('install-speech').disabled = runtime.busy || runtime.speech;
+  $('install-cuda').disabled = runtime.busy || runtime.cuda;
+  $('install-translation').disabled = runtime.busy || runtime.translation;
+}
+
+function renderSubtitleState(state) {
+  $('sub-status').textContent = state.status;
+  $('sub-level').value = state.level;
+  $('sub-start').disabled = !state.ready || state.running;
+  $('sub-stop').disabled = !state.running;
+  $('sub-reload').disabled = state.running;
+  const settings = media?.subtitle_settings;
+  options($('sub-microphone'), state.microphones.map(d => [d.id, d.name]), settings?.microphone ?? '');
+  options($('sub-device'), [['cpu', 'CPU（低速）'], ...state.gpus.map(g => [`cuda:${g.id}`, g.name])], settings?.device ?? 'cpu');
+}
+
+function renderTranslationState(state) {
+  $('tr-status').textContent = `${state.status}（訳 ${state.translated}、スキップ ${state.skipped}、待ち ${state.queued}）`;
+}
+
+function readSubtitleSettings() {
+  const microphone = $('sub-microphone').value;
+  return {
+    microphone: microphone === '' ? null : Number(microphone), device: $('sub-device').value || 'cpu',
+    model: $('sub-model').value, threshold: Number($('sub-threshold').value),
+    start_with_chat: $('sub-with-chat').checked, mask_profanity: $('sub-mask').checked,
+  };
+}
+
+async function loadMedia() {
+  try {
+    media = await invoke('get_media_state');
+  } catch (error) {
+    $('runtime-status').textContent = String(error);
+    return;
+  }
+  if (!media) return;
+  const s = media.subtitle_settings;
+  $('sub-model').value = s.model;
+  $('sub-threshold').value = s.threshold;
+  $('sub-with-chat').checked = s.start_with_chat;
+  $('sub-mask').checked = s.mask_profanity;
+  renderSubtitleState(media.subtitles);
+  $('tr-enabled').checked = media.translation_settings.enabled;
+  options($('tr-device'), [['cpu', 'CPU（低速）'], ...media.gpus.map(g => [`cuda:${g.id}`, g.name])], media.translation_settings.device);
+  renderTranslationState(media.translation);
+  renderRuntime(media.runtime);
+}
+
+$('sub-save').addEventListener('click', () => attempt('sub-status', async () => {
+  media.subtitle_settings = await invoke('set_subtitle_settings', { settings: readSubtitleSettings() });
+}, '保存しました'));
+$('sub-start').addEventListener('click', () => attempt('sub-status', async () => {
+  media.subtitle_settings = await invoke('set_subtitle_settings', { settings: readSubtitleSettings() });
+  await invoke('start_subtitles');
+}, '字幕を開始しています…'));
+$('sub-stop').addEventListener('click', () => invoke('stop_subtitles'));
+$('sub-reload').addEventListener('click', () => invoke('reload_devices'));
+$('sub-clear').addEventListener('click', () => invoke('clear_subtitle'));
+$('tr-save').addEventListener('click', () => attempt('tr-status', async () => {
+  media.translation_settings = await invoke('set_translation_settings', { settings: { enabled: $('tr-enabled').checked, device: $('tr-device').value } });
+}, '保存しました'));
+for (const feature of ['speech', 'cuda', 'translation']) {
+  $(`install-${feature}`).addEventListener('click', () => attempt('runtime-status', () => invoke('install_feature', { feature }), '導入が完了しました'));
+}
+
+function showTranslation(key, ja) {
+  translationsByKey.set(key, ja);
+  const line = items.get(key)?.querySelector('.translation');
+  if (line) { line.textContent = ja; line.hidden = false; }
+}
+
 // --- Events and start ------------------------------------------------------------------
 
 await listen('chat', ({ payload }) => {
@@ -613,6 +707,14 @@ await listen('chat', ({ payload }) => {
   else if (payload.type === 'ohayo') renderOhayo(payload);
   else if (payload.type === 'layout') layouts[payload.name] = payload.layout;
   else if (payload.type === 'speech') $('speech-result').textContent = payload.message;
+  else if (payload.type === 'subtitle') $('sub-latest').textContent = [payload.ja, payload.en].filter(Boolean).join(' / ');
+  else if (payload.type === 'subtitle_state') { if (media) media.subtitles = payload; renderSubtitleState(payload); }
+  else if (payload.type === 'translation_state') renderTranslationState(payload);
+  else if (payload.type === 'translation') showTranslation(payload.key, payload.ja);
+  else if (payload.type === 'translations_cleared') {
+    translationsByKey.clear();
+    for (const line of document.querySelectorAll('#comments .translation')) { line.textContent = ''; line.hidden = true; }
+  } else if (payload.type === 'runtime') renderRuntime(payload);
 });
 await listen('server-error', ({ payload }) => showError('server-error', payload));
 
@@ -643,4 +745,5 @@ renderViewers();
 renderEmoji(voice.emoji);
 for (const node of document.querySelectorAll('#comments li')) refreshViewerButton(node);
 loadSpeakers(voice.speech, voice.ai);
+await loadMedia();
 selectTab(recall('tab') || 'home');

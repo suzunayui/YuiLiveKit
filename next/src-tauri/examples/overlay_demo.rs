@@ -67,6 +67,12 @@ async fn main() {
                     core.ingest(id, Batch { messages: vec![message], removals: vec![] });
                 }
             }
+            Some("subtitle") => core.on_subtitle(text(&command, "ja").unwrap_or_default(), text(&command, "en").unwrap_or_default()),
+            Some("translate") => core.notify_media(yui_live_kit::core::Notice::Translation {
+                key: text(&command, "key").unwrap_or_default(),
+                ja: text(&command, "ja").unwrap_or_default(),
+            }),
+            Some("clear_translations") => core.notify_media(yui_live_kit::core::Notice::TranslationsCleared),
             Some("save_layout") => {
                 let name = text(&command, "name").unwrap_or_default();
                 let layout = serde_json::from_value(command["layout"].clone()).unwrap_or_default();

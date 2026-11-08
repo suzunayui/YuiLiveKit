@@ -24,6 +24,7 @@ const defaultLayout = {
   niconico: { ...area(0, { visible: false }), duration: 8, color: '#ffffff' },
   participants: { ...area(1380, { visible: false }), horizontal: false, title: '参加待ち' },
   ohayo: { ...area(1500, { visible: false }), label: 'おはよう' },
+  subtitles: { ...area(160), english_size: 32, duration: 10, alignment: 'center', text_color: '#ffffff', english_color: '#ffffff' },
 };
 
 const message = (key, extra = {}) => ({
@@ -72,6 +73,11 @@ const fakeTauri = ({ state }) => {
           case 'obs_plugin_status': return { state: 'missing', path: 'C:\\ProgramData\\obs-studio\\plugins\\yui-live-kit\\bin\\64bit\\yui-live-kit.dll', obs_running: false };
           case 'install_obs_plugin': return { state: 'installed', path: '', obs_running: false };
           case 'get_voice_state': return voice;
+          case 'get_media_state': return state.media;
+          case 'set_subtitle_settings': state.media.subtitle_settings = args.settings; return args.settings;
+          case 'set_translation_settings': state.media.translation_settings = args.settings; return args.settings;
+          case 'start_subtitles': return null;
+          case 'install_feature': return null;
           case 'voicevox_speakers': return [{ id: 2, name: '四国めたん（ノーマル）' }, { id: 3, name: 'ずんだもん（ノーマル）' }];
           case 'set_speech_settings': voice = { ...voice, speech: args.settings }; return args.settings;
           case 'set_ai_settings': voice = { ...voice, ai: args.settings }; return args.settings;
@@ -133,6 +139,14 @@ function baseState(extra = {}) {
       ai: { enabled: false, model: 'gpt-6-luna', persona: '', triggers: [], voice: { speaker: 2, speed: 1, volume: 1 }, interval_seconds: 20, hourly_limit: 30, max_comment_chars: 200 },
       viewers: { names: {}, blocked: [] }, has_api_key: false,
       emoji: [{ code: ':wave:', url: null, reading: null, sound: null, volume: 1 }],
+    },
+    media: {
+      subtitle_settings: { microphone: null, device: 'cpu', model: 'large-v3', threshold: 0.5, start_with_chat: true, mask_profanity: true },
+      translation_settings: { enabled: true, device: 'cpu' },
+      subtitles: { ready: true, running: false, status: '停止中', microphones: [{ id: 4, name: 'USB マイク' }], gpus: [{ id: 1, name: 'RTX' }], level: 0 },
+      translation: { active: false, ready: false, status: '翻訳は停止中です', translated: 0, skipped: 0, queued: 0 },
+      runtime: { busy: false, installing: null, status: '使いたい機能の「導入」を押してください', speech: true, cuda: false, translation: false },
+      gpus: [{ id: 0, name: 'RTX 5070 Ti' }],
     },
     ...extra,
   };
@@ -207,7 +221,7 @@ test('support, participants, layout editor and OBS tabs', async () => {
     assert.equal(await page.$$eval('#participants li', n => n.length), 0, 'the list follows the app');
 
     await page.click('[data-tab="layout"]');
-    assert.equal(await page.$$eval('#preview .box', b => b.length), 4);
+    assert.equal(await page.$$eval('#preview .box', b => b.length), 5);
     const box = await page.$('#preview .box.selected');
     const before = await box.boundingBox();
     await page.mouse.move(before.x + 20, before.y + 20);
@@ -296,6 +310,55 @@ test('reading aloud, AI replies, emoji and viewer settings', async () => {
     await page.waitForFunction(() => [...document.querySelectorAll('#emoji-list button')].some(b => b.textContent === '効果音を外す'));
     await page.evaluate(() => window.fire('chat', { type: 'speech', message: 'VOICEVOXに接続できません' }));
     assert.equal(await page.textContent('#speech-result'), 'VOICEVOXに接続できません');
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test('subtitles and translation settings, installs and live updates', async () => {
+  const server = await serve();
+  const browser = await chromium.launch({ channel: 'msedge' });
+  try {
+    const { page, errors } = await open(browser, server, baseState());
+    await page.click('[data-tab="media"]');
+    await page.waitForFunction(() => document.querySelectorAll('#sub-microphone option').length === 1);
+    assert.equal(await page.textContent('#install-speech'), '音声字幕を導入（約100MB）（導入済み）');
+    assert.equal(await page.isDisabled('#install-speech'), true);
+    assert.deepEqual(await page.$$eval('#sub-device option', o => o.map(x => x.value)), ['cpu', 'cuda:1']);
+    assert.deepEqual(await page.$$eval('#tr-device option', o => o.map(x => x.value)), ['cpu', 'cuda:0']);
+
+    await page.selectOption('#sub-device', 'cuda:1');
+    await page.selectOption('#sub-model', 'small');
+    await page.uncheck('#sub-with-chat');
+    await page.click('#sub-start');
+    await page.waitForFunction(() => window.calls.some(c => c[0] === 'start_subtitles'));
+    const saved = (await page.evaluate(() => window.calls.find(c => c[0] === 'set_subtitle_settings')))[1].settings;
+    assert.deepEqual([saved.microphone, saved.device, saved.model, saved.start_with_chat], [4, 'cuda:1', 'small', false]);
+
+    await page.evaluate(() => window.fire('chat', { type: 'subtitle_state', ready: true, running: true, status: '字幕を生成中', microphones: [{ id: 4, name: 'USB マイク' }], gpus: [], level: 0.6 }));
+    assert.equal(await page.isDisabled('#sub-stop'), false);
+    assert.equal(await page.$eval('#sub-level', m => m.value), 0.6);
+    await page.evaluate(() => window.fire('chat', { type: 'subtitle', ja: '<b>こんにちは</b>', en: 'Hello' }));
+    assert.equal(await page.textContent('#sub-latest'), '<b>こんにちは</b> / Hello');
+
+    await page.click('#install-translation');
+    await page.waitForFunction(() => window.calls.some(c => c[0] === 'install_feature' && c[1].feature === 'translation'));
+    await page.evaluate(() => window.fire('chat', { type: 'runtime', busy: true, installing: 'translation', status: '必要なライブラリを導入中', speech: true, cuda: false, translation: false }));
+    assert.equal(await page.textContent('#runtime-status'), '必要なライブラリを導入中');
+    assert.equal(await page.isDisabled('#install-cuda'), true, 'one install at a time');
+
+    await page.selectOption('#tr-device', 'cuda:0');
+    await page.click('#tr-save');
+    await page.waitForFunction(() => document.getElementById('tr-status').textContent === '保存しました');
+    assert.deepEqual((await page.evaluate(() => window.calls.find(c => c[0] === 'set_translation_settings')))[1].settings, { enabled: true, device: 'cuda:0' });
+
+    await page.click('[data-tab="comments"]');
+    await page.evaluate(() => window.fire('chat', { type: 'translation', key: 'youtube:1', ja: '<i>以前</i>' }));
+    assert.equal(await page.textContent('[data-key="youtube:1"] .translation'), '<i>以前</i>');
+    await page.evaluate(() => window.fire('chat', { type: 'translations_cleared' }));
+    assert.equal(await page.isHidden('[data-key="youtube:1"] .translation'), true);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

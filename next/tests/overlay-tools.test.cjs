@@ -34,6 +34,7 @@ function layout(changes) {
     niconico: { visible: true, x: 0, y: 100, width: 1920, height: 880, font_size: 56, duration: 30, color: '#ffffff' },
     participants: { visible: true, x: 1380, y: 40, width: 500, height: 600, font_size: 24, horizontal: false, title: '参加待ち' },
     ohayo: { visible: true, x: 1500, y: 920, width: 380, height: 120, font_size: 40, label: 'おはよう' },
+    subtitles: { visible: true, x: 160, y: 800, width: 1600, height: 250, font_size: 46, english_size: 32, duration: 2, alignment: 'center', text_color: '#ffffff', english_color: '#ffffff' },
   };
   for (const [part, values] of Object.entries(changes)) Object.assign(base[part], values);
   return base;
@@ -78,6 +79,42 @@ test('niconico, participants, greetings and named layouts', async () => {
     await demo.send({ op: 'save_layout', name: 'default', layout: layout({ comments: { x: 500, font_size: 40 }, ohayo: { visible: false } }) });
     await page.waitForFunction(() => document.getElementById('comments').style.left === '500px' && document.getElementById('ohayo').hidden);
     assert.equal(await game.$eval('#comments', n => n.hidden), true, 'saving one layout leaves other scenes alone');
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+    await demo.stop();
+  }
+});
+
+test('subtitles and comment translations on the overlay', async () => {
+  const demo = startDemo();
+  await demo.ready;
+  const browser = await chromium.launch({ channel: 'msedge' });
+  try {
+    await demo.send({ op: 'save_layout', name: 'default', layout: layout({ niconico: { visible: false } }) });
+    await demo.send({ op: 'start', stream: 'v1' });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.goto(`http://127.0.0.1:${PORT}/overlay`);
+    await page.waitForFunction(() => document.getElementById('sub-box').hidden);
+
+    await demo.send({ op: 'subtitle', ja: '<b>こんにちは</b>', en: 'Hello' });
+    await page.waitForFunction(() => !document.getElementById('sub-box').hidden);
+    assert.equal(await page.textContent('#sub-ja'), '<b>こんにちは</b>', 'subtitles are text');
+    assert.equal(await page.textContent('#sub-en'), 'Hello');
+    await page.reload();
+    await page.waitForFunction(() => document.getElementById('sub-ja').textContent === '<b>こんにちは</b>');
+    await page.waitForFunction(() => document.getElementById('sub-box').hidden, null, { timeout: 4000 });
+
+    await demo.send({ op: 'message', id: 't1', author: 'Guest', author_id: 'UC9', text: 'Hello everyone' });
+    await page.waitForFunction(() => document.querySelector('[data-key="youtube:t1"]'));
+    await demo.send({ op: 'translate', key: 'youtube:t1', ja: '<i>みなさん</i>こんにちは' });
+    await page.waitForFunction(() => document.querySelector('[data-key="youtube:t1"] .translation').textContent === '<i>みなさん</i>こんにちは');
+    assert.equal(await page.$$eval('#comments i', n => n.length), 0);
+    // Redrawing translations after a reload comes from the app's translation results (Rust tests cover it).
+    await demo.send({ op: 'clear_translations' });
+    await page.waitForFunction(() => document.querySelector('[data-key="youtube:t1"] .translation').hidden);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

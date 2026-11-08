@@ -38,6 +38,14 @@
   #participants li { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 12px; background: rgba(0, 0, 0, 0.7); }
   #participants .rank { color: #ffd54f; }
 
+  #subtitles { display: flex; flex-direction: column; justify-content: flex-end; }
+  #subtitles .box { background: #000; border: 3px solid #fff; border-radius: 20px; padding: 14px 28px; font-weight: 700;
+    line-height: 1.35; text-align: var(--sub-align); overflow-wrap: anywhere; }
+  #subtitles .box[hidden] { display: none; }
+  #sub-ja { margin: 0; font-size: var(--sub-size); color: var(--sub-color); }
+  #sub-en { margin: 6px 0 0; font-size: var(--sub-en-size); color: var(--sub-en-color); }
+  .translation { margin-top: 6px; padding-top: 6px; border-top: 1px solid currentColor; white-space: pre-wrap; }
+
   #ohayo { display: flex; align-items: center; justify-content: center; gap: 0.4em; color: #fff; font-weight: 800;
     font-size: var(--ohayo-size); background: rgba(0, 0, 0, 0.6); border-radius: 18px; text-shadow: 0 0 6px #000; }
 </style>
@@ -48,6 +56,7 @@
   <div id="participants" class="widget" hidden><h2 id="participants-title"></h2><ol id="participants-list"></ol></div>
   <div id="ohayo" class="widget" hidden><span id="ohayo-label"></span><span id="ohayo-count">0</span></div>
   <div id="comments" class="widget"></div>
+  <div id="subtitles" class="widget"><div class="box" id="sub-box" hidden><p id="sub-ja"></p><p id="sub-en"></p></div></div>
 </div>
 <script>
 'use strict';
@@ -57,7 +66,9 @@ const stage = $('stage');
 const layoutName = new URLSearchParams(location.search).get('layout') || 'default';
 const shown = new Map();
 const bullets = new Map();
+const translations = new Map();
 let layout = null;
+let subtitleTimer = null;
 
 function fit() {
   stage.style.transform = `scale(${Math.min(innerWidth / 1920, innerHeight / 1080)})`;
@@ -111,6 +122,12 @@ function applyLayout(next) {
   $('participants-title').textContent = next.participants.title;
   place($('ohayo'), next.ohayo);
   $('ohayo-label').textContent = next.ohayo.label;
+  place($('subtitles'), next.subtitles);
+  vars.setProperty('--sub-size', `${next.subtitles.font_size}px`);
+  vars.setProperty('--sub-en-size', `${next.subtitles.english_size}px`);
+  vars.setProperty('--sub-color', next.subtitles.text_color);
+  vars.setProperty('--sub-en-color', next.subtitles.english_color);
+  vars.setProperty('--sub-align', next.subtitles.alignment);
   trimComments();
 }
 
@@ -141,8 +158,34 @@ function renderComment(message) {
   body.append(element('span', 'author', message.author));
   if (message.amount_text) body.append(element('span', 'amount', message.amount_text));
   appendParts(body, message);
+  const translated = element('div', 'translation', translations.get(message.key) || '');
+  translated.lang = 'ja';
+  translated.hidden = !translations.has(message.key);
+  body.append(translated);
   node.append(body);
   return node;
+}
+
+function showTranslation(key, ja) {
+  translations.set(key, ja);
+  const line = shown.get(key)?.querySelector('.translation');
+  if (line) { line.textContent = ja; line.hidden = false; }
+}
+
+function clearTranslations() {
+  translations.clear();
+  for (const line of document.querySelectorAll('#comments .translation')) { line.textContent = ''; line.hidden = true; }
+}
+
+/** Shows a subtitle for the layout's duration; `ageMs` shortens it after a reconnect. */
+function showSubtitle(ja, en, ageMs = 0) {
+  clearTimeout(subtitleTimer);
+  const remaining = (layout ? layout.subtitles.duration : 10) * 1000 - ageMs;
+  const visible = Boolean(ja || en) && remaining > 0;
+  $('sub-ja').textContent = visible ? ja : '';
+  $('sub-en').textContent = visible ? en : '';
+  $('sub-box').hidden = !visible;
+  if (visible) subtitleTimer = setTimeout(() => showSubtitle('', ''), remaining);
 }
 
 function trimComments() {
@@ -259,6 +302,8 @@ function clear() {
   bullets.clear();
   renderParticipants([]);
   renderOhayo({ count: 0 });
+  translations.clear();
+  showSubtitle('', '');
 }
 
 let delay = 500;
@@ -270,7 +315,9 @@ function connect() {
     if (data.type === 'snapshot') {
       clear();
       applyLayout(data.layout);
+      for (const [key, ja] of Object.entries(data.translations || {})) translations.set(key, ja);
       data.messages.forEach(addComment);
+      if (data.subtitle) showSubtitle(data.subtitle.ja, data.subtitle.en, data.subtitle.age_ms);
       renderParticipants(data.participants);
       renderOhayo(data.ohayo);
     } else if (data.type === 'message') { addComment(data); addBullet(data); }
@@ -279,6 +326,9 @@ function connect() {
     else if (data.type === 'participants') renderParticipants(data.items);
     else if (data.type === 'ohayo') renderOhayo(data);
     else if (data.type === 'layout') applyLayout(data.layout);
+    else if (data.type === 'subtitle') showSubtitle(data.ja, data.en);
+    else if (data.type === 'translation') showTranslation(data.key, data.ja);
+    else if (data.type === 'translations_cleared') clearTranslations();
   };
   // When the app is closed, show nothing and keep trying, so OBS never needs a refresh.
   socket.onclose = () => {

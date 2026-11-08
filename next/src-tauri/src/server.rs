@@ -96,6 +96,8 @@ fn snapshot_json(core: &Core, layout: &str) -> String {
         "layout": core.layout(layout),
         "participants": core.participants(),
         "ohayo": core.ohayo(),
+        "translations": core.translations(),
+        "subtitle": core.last_subtitle().map(|(ja, en, at)| serde_json::json!({"ja": ja, "en": en, "age_ms": crate::core::now_ms() - at})),
     })
     .to_string()
 }
@@ -109,7 +111,11 @@ async fn overlay_socket(mut socket: WebSocket, core: Arc<Core>, layout: String) 
         tokio::select! {
             notice = notices.recv() => {
                 let text = match notice {
-                    Ok(Notice::Status { .. }) => continue,
+                    Ok(Notice::Status { .. })
+                    | Ok(Notice::Speech { .. })
+                    | Ok(Notice::SubtitleState(_))
+                    | Ok(Notice::TranslationState(_))
+                    | Ok(Notice::Runtime(_)) => continue,
                     Ok(Notice::Layout { name, .. }) if name != layout => continue,
                     Ok(notice) => serde_json::to_string(&notice).unwrap_or_default(),
                     // Too far behind: start over from the current state.

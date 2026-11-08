@@ -14,7 +14,10 @@ use crate::{
     db::{Db, Shown},
     layout::{self, Layout, Layouts},
     model::{Batch, ChatMessage, Platform},
+    runtime::{Feature, Runtime, RuntimeState},
     speech::{self, AiSettings, Player, Queue, RateLimit, Secrets, Source, SpeechSettings, Utterance, Viewers},
+    subtitles::{SubtitleSettings, SubtitleState, Subtitles},
+    translation::{Translation, TranslationSettings, TranslationState},
     tools::{self, ClearMode, Ohayo, Participant, Support},
     twitch, youtube,
 };
@@ -25,6 +28,8 @@ const OHAYO_KEYWORDS_KEY: &str = "ohayo_keywords";
 const SPEECH_KEY: &str = "speech";
 const AI_KEY: &str = "ai";
 const VIEWERS_KEY: &str = "viewers";
+const SUBTITLES_KEY: &str = "subtitles";
+const TRANSLATION_KEY: &str = "translation";
 /// Chat sent this long before a start still counts as new, for clocks that differ a little.
 const START_GRACE_MS: i64 = 2000;
 
@@ -42,6 +47,19 @@ pub enum Notice {
     Layout { name: String, layout: Layout },
     /// Something went wrong with reading aloud or AI replies.
     Speech { message: String },
+    Subtitle { ja: String, en: String },
+    SubtitleState(SubtitleState),
+    Translation { key: String, ja: String },
+    TranslationState(TranslationState),
+    TranslationsCleared,
+    Runtime(RuntimeState),
+}
+
+/// Subtitles, translation and what they need installed. Attached by the app once it knows its folders.
+pub struct Media {
+    pub runtime: Arc<Runtime>,
+    pub subtitles: Arc<Subtitles>,
+    pub translation: Arc<Translation>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -106,6 +124,11 @@ pub struct Core {
     backends: Backends,
     /// For background work that outlives the call that started it.
     me: std::sync::Weak<Core>,
+    media: Mutex<Option<Arc<Media>>>,
+    media_settings: Mutex<(SubtitleSettings, TranslationSettings)>,
+    /// Subtitles started by "start chat" also stop with it.
+    subtitles_with_chat: Mutex<bool>,
+    last_subtitle: Mutex<Option<(String, String, i64)>>,
 }
 
 pub fn now_ms() -> i64 {
@@ -150,8 +173,13 @@ impl Core {
             ai: load::<AiSettings>(&db, AI_KEY).sanitized(),
             viewers: load(&db, VIEWERS_KEY),
         };
+        let media_settings = (load::<SubtitleSettings>(&db, SUBTITLES_KEY).sanitized(), load::<TranslationSettings>(&db, TRANSLATION_KEY).sanitized());
         let (notices, _) = broadcast::channel(1024);
         Arc::new_cyclic(|me| Self {
+            media: Mutex::new(None),
+            media_settings: Mutex::new(media_settings),
+            subtitles_with_chat: Mutex::new(false),
+            last_subtitle: Mutex::new(None),
             me: me.clone(),
             db: Mutex::new(db),
             notices,
@@ -258,10 +286,14 @@ impl Core {
         };
         let may_change_ohayo = !deleted.is_empty() || shown.iter().any(|s| greeted(&s.message.text));
         let started_ms = self.session.lock().unwrap().started_ms;
+        let translation = self.media().map(|m| m.translation.clone());
         for message in &shown {
             if message.message.created_ms >= started_ms {
                 self.speak_message(stream_id, &message.message);
                 self.maybe_answer(stream_id, &message.message);
+                if let Some(translation) = &translation {
+                    translation.enqueue(&message.key, &message.message.text, &message.message.kind);
+                }
             }
         }
         for message in shown {
@@ -625,6 +657,170 @@ impl Core {
         speech::voicevox_speakers(&self.http, &self.backends.voicevox).await
     }
 
+    // --- Subtitles and translation ------------------------------------------------------
+
+    pub fn attach_media(&self, media: Media) {
+        *self.media.lock().unwrap() = Some(Arc::new(media));
+    }
+
+    pub fn media(&self) -> Option<Arc<Media>> {
+        self.media.lock().unwrap().clone()
+    }
+
+    pub fn media_settings(&self) -> (SubtitleSettings, TranslationSettings) {
+        self.media_settings.lock().unwrap().clone()
+    }
+
+    /// What the overlay needs to redraw subtitles and translations from scratch.
+    pub fn translations(&self) -> std::collections::HashMap<String, String> {
+        self.media().map(|m| m.translation.results()).unwrap_or_default()
+    }
+
+    pub fn last_subtitle(&self) -> Option<(String, String, i64)> {
+        self.last_subtitle.lock().unwrap().clone()
+    }
+
+    pub fn on_subtitle(&self, ja: String, en: String) {
+        *self.last_subtitle.lock().unwrap() = Some((ja.clone(), en.clone(), now_ms()));
+        self.notify(Notice::Subtitle { ja, en });
+    }
+
+    pub fn notify_media(&self, notice: Notice) {
+        self.notify(notice);
+    }
+
+    pub fn clear_subtitle(&self) {
+        *self.last_subtitle.lock().unwrap() = None;
+        self.notify(Notice::Subtitle { ja: String::new(), en: String::new() });
+    }
+
+    pub fn set_subtitle_settings(&self, settings: SubtitleSettings) -> Result<SubtitleSettings, String> {
+        let settings = settings.sanitized();
+        self.save(SUBTITLES_KEY, &settings)?;
+        if let Some(media) = self.media() {
+            media.subtitles.set_mask(settings.mask_profanity);
+        }
+        self.media_settings.lock().unwrap().0 = settings.clone();
+        Ok(settings)
+    }
+
+    /// Turning translation off while collecting stops it at once; turning it on starts it.
+    pub fn set_translation_settings(&self, settings: TranslationSettings) -> Result<TranslationSettings, String> {
+        let settings = settings.sanitized();
+        self.save(TRANSLATION_KEY, &settings)?;
+        let previous = std::mem::replace(&mut self.media_settings.lock().unwrap().1, settings.clone());
+        let collecting = self.session.lock().unwrap().cancel.is_some();
+        if collecting && previous != settings {
+            if let Some(media) = self.media() {
+                media.translation.stop();
+                self.start_translation(&media, &settings);
+            }
+        }
+        Ok(settings)
+    }
+
+    fn start_translation(&self, media: &Arc<Media>, settings: &TranslationSettings) {
+        if !settings.enabled {
+            return;
+        }
+        if media.runtime.ready(Feature::Translation) && !media.runtime.state().busy {
+            media.translation.start(&settings.device);
+        } else {
+            self.notify(Notice::TranslationState(TranslationState {
+                status: "コメント翻訳は未導入です。「コメント翻訳を導入」を押してください".into(),
+                ..TranslationState::default()
+            }));
+        }
+    }
+
+    pub(crate) fn start_media_with_chat(&self) {
+        let Some(media) = self.media() else { return };
+        let (subtitle_settings, translation_settings) = self.media_settings();
+        media.translation.stop();
+        self.start_translation(&media, &translation_settings);
+        if !subtitle_settings.start_with_chat || !media.runtime.ready(Feature::Speech) {
+            return;
+        }
+        if subtitle_settings.microphone.is_none() {
+            self.notify(Notice::SubtitleState(SubtitleState {
+                status: "音声字幕タブでマイクを選ぶと、チャット取得開始で字幕も始まります".into(),
+                ..media.subtitles.state()
+            }));
+            return;
+        }
+        *self.subtitles_with_chat.lock().unwrap() = true;
+        let cuda = media.runtime.ready(Feature::Cuda);
+        let Ok(handle) = tokio::runtime::Handle::try_current() else { return };
+        let me = self.self_arc();
+        handle.spawn(async move {
+            // The worker may still be listing devices right after the app starts.
+            for _ in 0..60 {
+                if media.subtitles.state().ready {
+                    break;
+                }
+                media.subtitles.prepare().await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            if let Err(message) = media.subtitles.start(&subtitle_settings, cuda).await {
+                if let Some(core) = me.upgrade() {
+                    core.notify(Notice::SubtitleState(SubtitleState { status: format!("字幕を開始できません: {message}"), ..media.subtitles.state() }));
+                }
+            }
+        });
+    }
+
+    /// Starts subtitles by themselves; they keep running when chat collection stops.
+    pub async fn start_subtitles(&self) -> Result<(), String> {
+        let media = self.media().ok_or("音声字幕は使えません")?;
+        if media.runtime.state().busy {
+            return Err("導入が終わるまでお待ちください".into());
+        }
+        *self.subtitles_with_chat.lock().unwrap() = false;
+        let settings = self.media_settings().0;
+        media.subtitles.start(&settings, media.runtime.ready(Feature::Cuda)).await
+    }
+
+    pub async fn stop_subtitles(&self) {
+        *self.subtitles_with_chat.lock().unwrap() = false;
+        if let Some(media) = self.media() {
+            media.subtitles.stop().await;
+        }
+    }
+
+    /// Lists microphones again by restarting the worker.
+    pub async fn reload_devices(&self) {
+        if let Some(media) = self.media() {
+            if media.runtime.ready(Feature::Speech) && !media.subtitles.state().running {
+                media.subtitles.close().await;
+                media.subtitles.prepare().await;
+            }
+        }
+    }
+
+    /// Ends collection and every worker process; called when the app exits.
+    pub fn shutdown(&self) {
+        self.stop();
+        if let Some(media) = self.media() {
+            media.translation.stop();
+            media.subtitles.kill();
+            media.runtime.close();
+        }
+    }
+
+    /// Installs a feature. Subtitles and translation stop first, since pip replaces files they load.
+    pub async fn install_feature(&self, feature: Feature) -> Result<(), String> {
+        let media = self.media().ok_or("追加機能は使えません")?;
+        if media.subtitles.state().running || media.translation.state().active {
+            return Err("字幕と翻訳を停止してから導入してください".into());
+        }
+        media.subtitles.close().await;
+        let result = media.runtime.install(feature).await;
+        if media.runtime.ready(Feature::Speech) {
+            media.subtitles.prepare().await;
+        }
+        result
+    }
+
     // --- Collection ---------------------------------------------------------------------
 
     /// Validates the inputs, then collects from each given platform. Needs a Tokio runtime.
@@ -636,6 +832,7 @@ impl Core {
             return Err("YouTubeかTwitchのどちらかを入力してください".into());
         }
         let token = self.reset_session();
+        self.start_media_with_chat();
 
         if let Some(target) = youtube_target {
             let core = self.clone();
@@ -689,6 +886,15 @@ impl Core {
     /// Stops collecting. What was collected stays on the overlay until the next start.
     pub fn stop(&self) {
         self.queue.lock().unwrap().clear();
+        if let Some(media) = self.media() {
+            media.translation.stop();
+            if std::mem::take(&mut *self.subtitles_with_chat.lock().unwrap()) {
+                let subtitles = media.subtitles.clone();
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move { subtitles.stop().await });
+                }
+            }
+        }
         self.session.lock().unwrap().started_ms = i64::MAX;
         let platforms: Vec<Platform> = {
             let mut session = self.session.lock().unwrap();

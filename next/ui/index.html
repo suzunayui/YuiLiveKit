@@ -19,6 +19,7 @@
     <button role="tab" data-tab="speech">読み上げ</button>
     <button role="tab" data-tab="ai">AI返答</button>
     <button role="tab" data-tab="emoji">絵文字</button>
+    <button role="tab" data-tab="media">字幕・翻訳</button>
     <button role="tab" data-tab="layout">配置</button>
     <button role="tab" data-tab="obs">OBS</button>
   </nav>
@@ -160,6 +161,51 @@
         <p class="hint">配信中に出た絵文字が並びます。読み方は読み上げに使い、効果音は絵文字を含むコメントで鳴らします（wav、mp3、ogg、m4a、10MB まで）。</p>
         <ol id="emoji-list" class="list"></ol>
         <p id="emoji-result" class="hint"></p>
+      </div>
+    </section>
+
+    <section data-panel="media" hidden>
+      <div class="card">
+        <h2>機能の導入</h2>
+        <p class="hint">必要なものは、押したときだけ取得します（アプリ専用の Python とライブラリ。システムには入れません）。初回の開始時にモデルも取得します。</p>
+        <div class="buttons">
+          <button id="install-speech">音声字幕を導入（約100MB）</button>
+          <button id="install-cuda">GPU 高速化を導入（約1.3GB）</button>
+          <button id="install-translation">コメント翻訳を導入</button>
+        </div>
+        <p id="runtime-status" class="hint" aria-live="polite"></p>
+      </div>
+      <div class="card">
+        <h2>音声字幕（日本語と英語）</h2>
+        <div class="grid">
+          <label>マイク <select id="sub-microphone"></select></label>
+          <label>認識に使うデバイス <select id="sub-device"></select></label>
+          <label>モデル <select id="sub-model">
+            <option value="large-v3">large-v3（精度重視）</option><option value="medium">medium</option>
+            <option value="small">small（速度重視）</option><option value="base">base</option></select></label>
+          <label>音声検出のしきい値 <input type="number" id="sub-threshold" min="0.3" max="0.8" step="0.05"></label>
+        </div>
+        <label class="inline"><input type="checkbox" id="sub-with-chat"> 「チャット取得開始」で字幕も一緒に開始する</label>
+        <label class="inline"><input type="checkbox" id="sub-mask"> 一部の語を伏字にする（fuck → f**k）</label>
+        <div class="buttons">
+          <button id="sub-save">設定を保存</button>
+          <button id="sub-start" class="primary">字幕開始</button>
+          <button id="sub-stop">字幕停止</button>
+          <button id="sub-reload">デバイスを読み込み直す</button>
+          <button id="sub-clear">字幕を消す</button>
+        </div>
+        <p id="sub-status" class="hint" aria-live="polite"></p>
+        <label>マイクの音量 <meter id="sub-level" min="0" max="1" value="0"></meter></label>
+        <p class="hint">最新の字幕: <span id="sub-latest"></span></p>
+        <p class="hint">録音や字幕は保存しません。字幕の見た目と位置は「配置」タブで変えられます。</p>
+      </div>
+      <div class="card">
+        <h2>外国語コメントの日本語訳</h2>
+        <p class="hint">TranslateGemma 12B をこの PC で動かします。新しいコメントだけを訳し、原文の下に表示します。初回のみ約7.3GBのモデルを取得します。</p>
+        <label class="inline"><input type="checkbox" id="tr-enabled"> 翻訳する</label>
+        <label>処理するデバイス <select id="tr-device"></select></label>
+        <button id="tr-save">保存</button>
+        <p id="tr-status" class="hint" aria-live="polite"></p>
       </div>
     </section>
 

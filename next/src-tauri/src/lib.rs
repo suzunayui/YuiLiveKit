@@ -5,11 +5,17 @@ pub mod db;
 pub mod layout;
 pub mod model;
 pub mod obs_plugin;
+pub mod runtime;
 pub mod server;
 pub mod speech;
+pub mod subtitles;
+pub mod translation;
 pub mod tools;
 pub mod twitch;
+pub mod worker;
 pub mod youtube;
 
 #[cfg(test)]
 mod speech_flow_tests;
+#[cfg(test)]
+mod media_flow_tests;

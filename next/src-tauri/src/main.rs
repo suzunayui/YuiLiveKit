@@ -9,10 +9,13 @@ use std::{
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 use yui_live_kit::{
-    core::{Core, Status, ToolSettings},
+    core::{Core, Media, Notice, Status, ToolSettings},
     db::{Db, ImportSummary, Shown},
     layout::{Layout, Layouts},
     obs_plugin::{self, PluginStatus},
+    runtime::{Feature, Paths, Runtime, RuntimeState},
+    subtitles::{Launch, SubtitleSettings, SubtitleState, Subtitles},
+    translation::{Translation, TranslationSettings, TranslationState},
     speech::{AiSettings, Speaker, SpeechSettings, Viewers, Voice},
     tools::{ClearMode, Emoji, Ohayo, Participant, Support},
 };
@@ -268,6 +271,150 @@ async fn choose_emoji_sound(app: tauri::AppHandle, core: CoreState<'_>, code: St
     db.emoji()
 }
 
+#[derive(Serialize)]
+struct MediaState {
+    subtitle_settings: SubtitleSettings,
+    translation_settings: TranslationSettings,
+    subtitles: SubtitleState,
+    translation: TranslationState,
+    runtime: RuntimeState,
+    gpus: Vec<yui_live_kit::subtitles::Device>,
+}
+
+/// NVIDIA GPUs for translation (subtitles get theirs from the worker).
+fn nvidia_gpus() -> Vec<yui_live_kit::subtitles::Device> {
+    let mut command = std::process::Command::new("nvidia-smi");
+    command.args(["--query-gpu=index,name", "--format=csv,noheader"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    command
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let (index, name) = line.split_once(',')?;
+                    Some(yui_live_kit::subtitles::Device { id: index.trim().parse().ok()?, name: name.trim().to_string() })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn get_media_state(core: CoreState<'_>) -> Result<MediaState, String> {
+    let media = core.media().ok_or("音声字幕とコメント翻訳は使えません")?;
+    let (subtitle_settings, translation_settings) = core.media_settings();
+    let gpus = tauri::async_runtime::spawn_blocking(nvidia_gpus).await.unwrap_or_default();
+    Ok(MediaState {
+        subtitle_settings,
+        translation_settings,
+        subtitles: media.subtitles.state(),
+        translation: media.translation.state(),
+        runtime: media.runtime.state(),
+        gpus,
+    })
+}
+
+#[tauri::command]
+fn set_subtitle_settings(core: CoreState<'_>, settings: SubtitleSettings) -> Result<SubtitleSettings, String> {
+    core.set_subtitle_settings(settings)
+}
+
+#[tauri::command]
+fn set_translation_settings(core: CoreState<'_>, settings: TranslationSettings) -> Result<TranslationSettings, String> {
+    core.set_translation_settings(settings)
+}
+
+#[tauri::command]
+async fn start_subtitles(core: CoreState<'_>) -> Result<(), String> {
+    core.start_subtitles().await
+}
+
+#[tauri::command]
+async fn stop_subtitles(core: CoreState<'_>) -> Result<(), String> {
+    core.stop_subtitles().await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn reload_devices(core: CoreState<'_>) -> Result<(), String> {
+    core.reload_devices().await;
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_subtitle(core: CoreState<'_>) {
+    core.clear_subtitle();
+}
+
+#[tauri::command]
+async fn install_feature(core: CoreState<'_>, feature: Feature) -> Result<(), String> {
+    core.install_feature(feature).await
+}
+
+/// Python files shipped with the app; next to the sources when running a development build.
+fn python_source(app: &tauri::AppHandle) -> PathBuf {
+    let bundled = app.path().resource_dir().map(|dir| dir.join("python")).ok().filter(|dir| dir.join("subtitles").exists());
+    bundled.unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("python"))
+}
+
+fn attach_media(app: &tauri::AppHandle, core: &Arc<Core>, data_dir: &Path) {
+    let root = std::env::var_os("YUI_LIVE_KIT_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| data_dir.join("optional-runtime"));
+    let models = std::env::var_os("YUI_LIVE_KIT_MODEL_DIR").map(PathBuf::from).unwrap_or_else(|| data_dir.join("models"));
+    let paths = Paths { root: root.clone(), source: python_source(app) };
+    let weak = Arc::downgrade(core);
+    let runtime = Runtime::new(paths.clone(), move |state| {
+        if let Some(core) = weak.upgrade() {
+            core.notify_media(Notice::Runtime(state));
+        }
+    });
+    let env = |extra: &[(&str, PathBuf)]| -> std::collections::HashMap<String, String> {
+        let mut env = std::collections::HashMap::from([("SUBTITLE_MODEL_DIR".to_string(), models.display().to_string())]);
+        for (key, value) in extra {
+            env.insert(key.to_string(), value.display().to_string());
+        }
+        env
+    };
+    let speech_launch =
+        Launch { python: paths.python(), script: paths.worker(Feature::Speech), cwd: data_dir.to_path_buf(), env: env(&[]) };
+    let translation_launch = Launch {
+        python: paths.python(),
+        script: paths.worker(Feature::Translation),
+        cwd: data_dir.to_path_buf(),
+        env: env(&[("SUBTITLE_TRANSLATION_RUNTIME", paths.llama())]),
+    };
+    let weak = Arc::downgrade(core);
+    let subtitles = Subtitles::new(speech_launch, core.media_settings().0.mask_profanity, move |event| {
+        if let Some(core) = weak.upgrade() {
+            match event {
+                yui_live_kit::subtitles::Event::State(state) => core.notify_media(Notice::SubtitleState(state)),
+                yui_live_kit::subtitles::Event::Subtitle { ja, en } => core.on_subtitle(ja, en),
+            }
+        }
+    });
+    let weak = Arc::downgrade(core);
+    let translation = Translation::new(translation_launch, move |event| {
+        if let Some(core) = weak.upgrade() {
+            core.notify_media(match event {
+                yui_live_kit::translation::Event::State(state) => Notice::TranslationState(state),
+                yui_live_kit::translation::Event::Result { key, ja } => Notice::Translation { key, ja },
+                yui_live_kit::translation::Event::Cleared => Notice::TranslationsCleared,
+            });
+        }
+    });
+    let speech_ready = runtime.ready(Feature::Speech);
+    core.attach_media(Media { runtime, subtitles: subtitles.clone(), translation });
+    if speech_ready {
+        tauri::async_runtime::spawn(async move { subtitles.prepare().await });
+    }
+}
+
 fn main() {
     let port = port();
     tauri::Builder::default()
@@ -297,6 +444,14 @@ fn main() {
             obs_plugin_status,
             install_obs_plugin,
             get_voice_state,
+            get_media_state,
+            set_subtitle_settings,
+            set_translation_settings,
+            start_subtitles,
+            stop_subtitles,
+            reload_devices,
+            clear_subtitle,
+            install_feature,
             set_speech_settings,
             set_ai_settings,
             set_api_key,
@@ -315,6 +470,7 @@ fn main() {
             let core = Core::new(Db::open(&data_dir.join("livekit.db"))?);
             app.manage(core.clone());
             tauri::async_runtime::spawn(core.clone().run_speech());
+            attach_media(app.handle(), &core, &data_dir);
 
             let handle = app.handle().clone();
             let mut notices = core.subscribe();
@@ -342,6 +498,14 @@ fn main() {
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running YuiLiveKit");
+        .build(tauri::generate_context!())
+        .expect("error while building YuiLiveKit")
+        .run(|app, event| {
+            // Python, faster-whisper and llama.cpp must not outlive the app.
+            if let tauri::RunEvent::Exit = event {
+                if let Some(core) = app.try_state::<Arc<Core>>() {
+                    core.shutdown();
+                }
+            }
+        });
 }
