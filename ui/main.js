@@ -75,13 +75,92 @@ function messageText(message) {
 
 // --- Tabs ------------------------------------------------------------------------------
 
+const tabButtons = () => [...$('tab-buttons').querySelectorAll('button[data-tab]')];
+
+function readList(key) {
+  try {
+    const list = JSON.parse(recall(key) || '[]');
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
 function selectTab(name) {
-  for (const tab of document.querySelectorAll('#tabs button')) tab.setAttribute('aria-selected', String(tab.dataset.tab === name));
+  // A hidden tab, or one remembered from an older version, falls back to the first shown tab.
+  const target = tabButtons().find(tab => tab.dataset.tab === name && !tab.hidden) || tabButtons().find(tab => !tab.hidden);
+  name = target.dataset.tab;
+  for (const tab of tabButtons()) tab.setAttribute('aria-selected', String(tab.dataset.tab === name));
   for (const panel of document.querySelectorAll('[data-panel]')) panel.hidden = panel.dataset.panel !== name;
   remember('tab', name);
   if (name === 'obs') refreshPlugin();
 }
-for (const tab of document.querySelectorAll('#tabs button')) tab.addEventListener('click', () => selectTab(tab.dataset.tab));
+for (const tab of tabButtons()) tab.addEventListener('click', () => selectTab(tab.dataset.tab));
+
+// Tabs can be dragged into the order the user wants, and unused ones hidden. Both are kept in
+// this window's storage. Tabs that are new since the order was saved keep their place at the end.
+function applyTabOrder() {
+  const order = readList('tab-order');
+  const tabs = tabButtons();
+  const rank = tab => (order.includes(tab.dataset.tab) ? order.indexOf(tab.dataset.tab) : order.length + tabs.indexOf(tab));
+  $('tab-buttons').append(...tabs.sort((a, b) => rank(a) - rank(b)));
+}
+
+function tabLabel(tab) {
+  return tab.firstChild.textContent.trim();
+}
+
+function renderTabVisibility() {
+  const hidden = readList('tab-hidden');
+  for (const tab of tabButtons()) tab.hidden = hidden.includes(tab.dataset.tab);
+  const shown = tabButtons().filter(tab => !tab.hidden).length;
+  $('tab-visibility').replaceChildren(...tabButtons().map(tab => {
+    const box = element('input');
+    box.type = 'checkbox';
+    box.dataset.show = tab.dataset.tab;
+    box.checked = !tab.hidden;
+    // The last shown tab cannot be hidden, so the window never ends up empty.
+    box.disabled = !tab.hidden && shown === 1;
+    box.addEventListener('change', () => {
+      const next = readList('tab-hidden').filter(name => name !== tab.dataset.tab);
+      if (!box.checked) next.push(tab.dataset.tab);
+      remember('tab-hidden', JSON.stringify(next));
+      renderTabVisibility();
+      if (tab.getAttribute('aria-selected') === 'true' && !box.checked) selectTab('');
+    });
+    const label = element('label', 'inline');
+    label.append(box, document.createTextNode(tabLabel(tab)));
+    return label;
+  }));
+}
+applyTabOrder();
+renderTabVisibility();
+
+let draggedTab = null;
+for (const tab of tabButtons()) tab.draggable = true;
+$('tab-buttons').addEventListener('dragstart', event => {
+  draggedTab = event.target.closest('button');
+  if (!draggedTab) return;
+  draggedTab.classList.add('dragging');
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', draggedTab.dataset.tab);
+});
+$('tab-buttons').addEventListener('dragover', event => {
+  if (!draggedTab) return;
+  event.preventDefault();
+  const over = event.target.closest('button');
+  if (!over || over === draggedTab) return;
+  const after = event.clientY > over.getBoundingClientRect().top + over.offsetHeight / 2;
+  over.parentNode.insertBefore(draggedTab, after ? over.nextSibling : over);
+});
+$('tab-buttons').addEventListener('drop', event => event.preventDefault());
+$('tab-buttons').addEventListener('dragend', () => {
+  if (!draggedTab) return;
+  draggedTab.classList.remove('dragging');
+  draggedTab = null;
+  remember('tab-order', JSON.stringify(tabButtons().map(tab => tab.dataset.tab)));
+  renderTabVisibility();
+});
 
 // --- Comments --------------------------------------------------------------------------
 
@@ -691,4 +770,4 @@ renderEmoji(voice.emoji);
 for (const node of document.querySelectorAll('#comments li')) refreshViewerButton(node);
 loadSpeakers(voice.speech, voice.ai);
 await loadMedia();
-selectTab(recall('tab') || 'home');
+selectTab(recall('tab') || 'comments');

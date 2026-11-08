@@ -19,35 +19,28 @@
     <p id="server-error" class="error" hidden></p>
   </header>
 
-  <nav id="tabs" role="tablist" aria-orientation="vertical">
-    <button role="tab" data-tab="home" aria-selected="true">ホーム</button>
-    <button role="tab" data-tab="comments">コメント</button>
-    <button role="tab" data-tab="support">スパチャ・メンバー <span id="support-unread"></span></button>
-    <button role="tab" data-tab="participants">参加管理</button>
-    <button role="tab" data-tab="speech">読み上げ</button>
-    <button role="tab" data-tab="ai">AI返答</button>
-    <button role="tab" data-tab="emoji">絵文字</button>
-    <button role="tab" data-tab="media">字幕・翻訳</button>
-    <button role="tab" data-tab="look">見た目</button>
-    <button role="tab" data-tab="obs">OBS</button>
+  <nav id="tabs" aria-label="タブ">
+    <div id="tab-buttons" role="tablist" aria-orientation="vertical" title="ドラッグで並べ替えられます">
+      <button role="tab" data-tab="comments" aria-selected="true">コメント</button>
+      <button role="tab" data-tab="support">スパチャ・メンバー <span id="support-unread"></span></button>
+      <button role="tab" data-tab="participants">参加管理</button>
+      <button role="tab" data-tab="ohayo">おはよう</button>
+      <button role="tab" data-tab="speech">読み上げ</button>
+      <button role="tab" data-tab="ai">AI返答</button>
+      <button role="tab" data-tab="emoji">絵文字</button>
+      <button role="tab" data-tab="media">字幕・翻訳</button>
+      <button role="tab" data-tab="look">見た目</button>
+      <button role="tab" data-tab="obs">OBS</button>
+    </div>
+    <details id="tab-settings">
+      <summary>タブの表示</summary>
+      <p class="hint">チェックを外したタブは隠れます。チェックを付けると戻ります。</p>
+      <div id="tab-visibility"></div>
+    </details>
   </nav>
 
   <main>
-    <section data-panel="home">
-      <div class="card">
-        <h2>おはようカウンター</h2>
-        <div class="counter">
-          <button id="ohayo-minus" aria-label="1減らす">−</button>
-          <strong id="ohayo-count">0</strong>
-          <button id="ohayo-plus" aria-label="1増やす">＋</button>
-          <button id="ohayo-reset">リセット</button>
-        </div>
-        <p class="hint">検出 <span id="ohayo-detected">0</span> 人、手動の調整 <span id="ohayo-adjustment">0</span></p>
-        <label>数えるキーワード（1行に1つ） <textarea id="ohayo-keywords" rows="3"></textarea></label>
-        <button id="ohayo-keywords-save">キーワードを保存</button>
-        <span id="ohayo-keywords-result" class="hint"></span>
-      </div>
-
+    <section data-panel="comments">
       <div class="card" id="legacy" hidden>
         <h2>以前のコメント履歴</h2>
         <p>以前の YuiLiveKit（YouTubeOverlay）の履歴を一度だけ取り込めます。初見の表示に使います。元のデータは変更しません。</p>
@@ -55,9 +48,7 @@
         <button id="legacy-import">取り込む</button>
         <p id="legacy-result"></p>
       </div>
-    </section>
 
-    <section data-panel="comments" hidden>
       <div class="card">
         <h2>コメント <span id="comment-count"></span></h2>
         <ol id="comments" class="list"></ol>
@@ -91,6 +82,22 @@
         <label>参加のキーワード <input id="participant-keyword"></label>
         <button id="participant-keyword-save">保存</button>
         <span id="participant-keyword-result" class="hint"></span>
+      </div>
+    </section>
+
+    <section data-panel="ohayo" hidden>
+      <div class="card">
+        <h2>おはようカウンター</h2>
+        <div class="counter">
+          <button id="ohayo-minus" aria-label="1減らす">−</button>
+          <strong id="ohayo-count">0</strong>
+          <button id="ohayo-plus" aria-label="1増やす">＋</button>
+          <button id="ohayo-reset">リセット</button>
+        </div>
+        <p class="hint">検出 <span id="ohayo-detected">0</span> 人、手動の調整 <span id="ohayo-adjustment">0</span></p>
+        <label>数えるキーワード（1行に1つ） <textarea id="ohayo-keywords" rows="3"></textarea></label>
+        <button id="ohayo-keywords-save">キーワードを保存</button>
+        <span id="ohayo-keywords-result" class="hint"></span>
       </div>
     </section>
 

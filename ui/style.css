@@ -19,10 +19,18 @@ main { overflow-y: auto; padding: 16px; }
 h2 { font-size: 16px; margin: 0 0 8px; }
 main > section { display: grid; gap: 12px; }
 main > section[hidden] { display: none; }
-#tabs { display: flex; flex-direction: column; gap: 2px; padding: 12px 8px; overflow-y: auto; border-right: 1px solid var(--line); }
+#tabs { display: flex; flex-direction: column; gap: 12px; padding: 12px 8px; overflow-y: auto; border-right: 1px solid var(--line); }
+#tab-buttons { display: flex; flex-direction: column; gap: 2px; }
+#tab-buttons button[hidden] { display: none; }
+#tab-settings { margin-top: auto; font-size: 13px; color: var(--muted); }
+#tab-settings summary { cursor: pointer; padding: 4px 12px; }
+#tab-settings .hint { margin: 4px 12px 6px; }
+#tab-visibility { display: grid; gap: 4px; padding: 0 12px; }
+#tab-visibility label { color: var(--text); }
 #tabs button { border: none; border-left: 3px solid transparent; border-radius: 0 6px 6px 0; background: none; padding: 9px 12px; text-align: left; }
 #tabs button:hover { background: var(--card); }
 #tabs button[aria-selected="true"] { border-left-color: var(--accent); background: var(--card); font-weight: 700; }
+#tabs button.dragging { opacity: 0.4; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
 label { display: grid; gap: 4px; margin-bottom: 8px; font-size: 13px; color: var(--muted); }
 label.inline { display: inline-flex; align-items: center; gap: 4px; margin: 0; }

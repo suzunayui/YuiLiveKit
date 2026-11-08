@@ -159,7 +159,7 @@ function baseState(extra = {}) {
   };
 }
 
-test('home and comments: collection, status, safe chat text and history', async () => {
+test('top bar, comments, greetings and the history import', async () => {
   const server = await serve();
   const browser = await chromium.launch({ channel: 'msedge' });
   try {
@@ -185,7 +185,7 @@ test('home and comments: collection, status, safe chat text and history', async 
     await page.evaluate(() => window.fire('chat', { type: 'deleted', keys: ['youtube:2'] }));
     assert.equal(await page.$('#comments [data-key="youtube:2"]'), null, 'deleted comments leave the list (K1)');
 
-    await page.click('[data-tab="home"]');
+    await page.click('[data-tab="ohayo"]');
     await page.click('#ohayo-plus');
     await page.waitForFunction(() => document.getElementById('ohayo-count').textContent === '3');
     await page.click('#ohayo-reset');
@@ -194,8 +194,41 @@ test('home and comments: collection, status, safe chat text and history', async 
     await page.click('#ohayo-keywords-save');
     await page.waitForFunction(() => document.getElementById('ohayo-keywords-result').textContent === '保存しました');
     assert.deepEqual((await page.evaluate(() => window.calls.find(c => c[0] === 'set_tool_settings')))[1].ohayoKeywords, ['おはよ', 'おっは', 'ohayo']);
+    await page.click('[data-tab="comments"]');
     await page.click('#legacy-import');
     await page.waitForFunction(() => document.querySelector('#legacy-result').textContent.includes('42件'));
+
+    // Tabs move by dragging, and the order is still there after a restart.
+    const tabOrder = () => page.$$eval('#tabs button', tabs => tabs.map(t => t.dataset.tab));
+    await page.locator('[data-tab="ohayo"]').dragTo(page.locator('[data-tab="comments"]'), { targetPosition: { x: 20, y: 3 } });
+    assert.deepEqual((await tabOrder()).slice(0, 3), ['ohayo', 'comments', 'support']);
+    assert.equal(await page.isVisible('[data-panel="comments"]'), true, 'dragging does not switch tabs');
+    await page.reload();
+    await page.waitForFunction(() => window.calls.some(c => c[0] === 'get_state'));
+    assert.deepEqual((await tabOrder()).slice(0, 3), ['ohayo', 'comments', 'support'], 'the order is remembered');
+    await page.evaluate(() => localStorage.setItem('tab-order', JSON.stringify(['obs', 'gone'])));
+    await page.reload();
+    await page.waitForFunction(() => window.calls.some(c => c[0] === 'get_state'));
+    assert.deepEqual((await tabOrder()).slice(0, 3), ['obs', 'comments', 'support'], 'unknown names are ignored and new tabs keep their place');
+
+    // Unused tabs can be hidden and shown again, and stay hidden after a restart.
+    await page.click('#tab-settings summary');
+    await page.click('[data-tab="ohayo"]');
+    await page.uncheck('#tab-visibility input[data-show="ohayo"]');
+    assert.equal(await page.isVisible('[data-tab="ohayo"]'), false, 'the tab is hidden');
+    assert.equal(await page.isVisible('[data-panel="comments"]'), false);
+    assert.equal(await page.isVisible('[data-panel="obs"]'), true, 'hiding the open tab moves to the first shown one');
+    await page.reload();
+    await page.waitForFunction(() => window.calls.some(c => c[0] === 'get_state'));
+    assert.equal(await page.isVisible('[data-tab="ohayo"]'), false, 'still hidden after a restart');
+    await page.click('#tab-settings summary');
+    await page.check('#tab-visibility input[data-show="ohayo"]');
+    assert.equal(await page.isVisible('[data-tab="ohayo"]'), true, 'shown again');
+    await page.evaluate(() => localStorage.setItem('tab-hidden', JSON.stringify([...document.querySelectorAll('#tab-buttons button')].map(b => b.dataset.tab).filter(t => t !== 'support'))));
+    await page.reload();
+    await page.waitForFunction(() => window.calls.some(c => c[0] === 'get_state'));
+    assert.equal(await page.isVisible('[data-panel="support"]'), true, 'opens the only shown tab');
+    assert.equal(await page.isDisabled('#tab-visibility input[data-show="support"]'), true, 'the last shown tab cannot be hidden');
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
