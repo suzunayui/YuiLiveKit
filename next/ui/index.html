@@ -11,35 +11,125 @@
     <div id="statuses" aria-live="polite"></div>
   </header>
 
-  <section class="card">
-    <h2>チャットの取得</h2>
-    <label>YouTube <input id="youtube" placeholder="@ハンドル / チャンネルID / 動画ID / YouTubeのURL" autocomplete="off" spellcheck="false"></label>
-    <label>Twitch <input id="twitch" placeholder="チャンネル名 / twitch.tvのURL" autocomplete="off" spellcheck="false"></label>
-    <div class="buttons">
-      <button id="start" class="primary">チャット取得開始</button>
-      <button id="stop">停止</button>
-    </div>
-    <p id="start-error" class="error" hidden></p>
-  </section>
+  <nav id="tabs" role="tablist">
+    <button role="tab" data-tab="home" aria-selected="true">ホーム</button>
+    <button role="tab" data-tab="comments">コメント</button>
+    <button role="tab" data-tab="support">スパチャ・メンバー <span id="support-unread"></span></button>
+    <button role="tab" data-tab="participants">参加管理</button>
+    <button role="tab" data-tab="layout">配置</button>
+    <button role="tab" data-tab="obs">OBS</button>
+  </nav>
 
-  <section class="card">
-    <h2>OBS</h2>
-    <p>OBS に追加するのは、このブラウザソースだけです: <code id="overlay-url"></code></p>
-    <p id="server-error" class="error" hidden></p>
-  </section>
+  <main>
+    <section data-panel="home">
+      <div class="card">
+        <h2>チャットの取得</h2>
+        <label>YouTube <input id="youtube" placeholder="@ハンドル / チャンネルID / 動画ID / YouTubeのURL" autocomplete="off" spellcheck="false"></label>
+        <label>Twitch <input id="twitch" placeholder="チャンネル名 / twitch.tvのURL" autocomplete="off" spellcheck="false"></label>
+        <div class="buttons">
+          <button id="start" class="primary">チャット取得開始</button>
+          <button id="stop">停止</button>
+        </div>
+        <p id="start-error" class="error" hidden></p>
+        <p id="server-error" class="error" hidden></p>
+      </div>
 
-  <section class="card" id="legacy" hidden>
-    <h2>以前のコメント履歴</h2>
-    <p>以前の YuiLiveKit（YouTubeOverlay）の履歴を一度だけ取り込めます。初見の表示に使います。元のデータは変更しません。</p>
-    <select id="legacy-path"></select>
-    <button id="legacy-import">取り込む</button>
-    <p id="legacy-result"></p>
-  </section>
+      <div class="card">
+        <h2>おはようカウンター</h2>
+        <div class="counter">
+          <button id="ohayo-minus" aria-label="1減らす">−</button>
+          <strong id="ohayo-count">0</strong>
+          <button id="ohayo-plus" aria-label="1増やす">＋</button>
+          <button id="ohayo-reset">リセット</button>
+        </div>
+        <p class="hint">検出 <span id="ohayo-detected">0</span> 人、手動の調整 <span id="ohayo-adjustment">0</span></p>
+        <label>数えるキーワード（1行に1つ） <textarea id="ohayo-keywords" rows="3"></textarea></label>
+        <button id="ohayo-keywords-save">キーワードを保存</button>
+        <span id="ohayo-keywords-result" class="hint"></span>
+      </div>
 
-  <section class="card comments-card">
-    <h2>コメント <span id="comment-count"></span></h2>
-    <ol id="comments"></ol>
-  </section>
+      <div class="card" id="legacy" hidden>
+        <h2>以前のコメント履歴</h2>
+        <p>以前の YuiLiveKit（YouTubeOverlay）の履歴を一度だけ取り込めます。初見の表示に使います。元のデータは変更しません。</p>
+        <select id="legacy-path"></select>
+        <button id="legacy-import">取り込む</button>
+        <p id="legacy-result"></p>
+      </div>
+    </section>
+
+    <section data-panel="comments" hidden>
+      <div class="card">
+        <h2>コメント <span id="comment-count"></span></h2>
+        <ol id="comments" class="list"></ol>
+      </div>
+    </section>
+
+    <section data-panel="support" hidden>
+      <div class="card">
+        <h2>スパチャ・メンバー</h2>
+        <div class="buttons">
+          <label class="inline"><input type="checkbox" id="support-unread-only"> 未読のみ</label>
+          <button id="support-read-all">全て既読</button>
+          <button id="support-copy">未読をコピー</button>
+          <span id="support-result" class="hint"></span>
+        </div>
+        <p class="hint">クリックで既読と未読を切り替えます。</p>
+        <ol id="support" class="list"></ol>
+      </div>
+    </section>
+
+    <section data-panel="participants" hidden>
+      <div class="card">
+        <h2>参加管理</h2>
+        <div class="buttons">
+          <label class="inline"><input type="checkbox" id="participants-hide-done"> 完了を隠す</label>
+          <button id="participants-clear-done">完了を消す</button>
+          <button id="participants-clear-all">全て消す</button>
+        </div>
+        <p class="hint">ドラッグで順番を変えられます。</p>
+        <ol id="participants" class="list"></ol>
+        <label>参加のキーワード <input id="participant-keyword"></label>
+        <button id="participant-keyword-save">保存</button>
+        <span id="participant-keyword-result" class="hint"></span>
+      </div>
+    </section>
+
+    <section data-panel="layout" hidden>
+      <div class="card">
+        <h2>配置</h2>
+        <div class="buttons">
+          <select id="layout-name"></select>
+          <input id="layout-new-name" placeholder="新しい配置の名前（半角英数字）">
+          <button id="layout-add">追加</button>
+          <button id="layout-delete">この配置を消す</button>
+        </div>
+        <p class="hint">OBS で使う URL: <code id="layout-url"></code></p>
+        <div id="preview" aria-label="OBS 画面のプレビュー"></div>
+        <div id="widget-form"></div>
+        <div class="buttons">
+          <button id="layout-save" class="primary">保存して OBS に反映</button>
+          <span id="layout-result" class="hint"></span>
+        </div>
+      </div>
+    </section>
+
+    <section data-panel="obs" hidden>
+      <div class="card">
+        <h2>OBS プラグイン</h2>
+        <p>プラグインを入れると、OBS の起動時に今のシーンへ YuiLiveKit のソースを自動で追加します。追加は一度だけで、消したソースは戻しません。OBS の「ツール」メニューからも追加できます。</p>
+        <p>状態: <strong id="plugin-state">確認中…</strong></p>
+        <p class="hint" id="plugin-path"></p>
+        <button id="plugin-install" class="primary">OBS プラグインを導入</button>
+        <p id="plugin-result"></p>
+      </div>
+      <div class="card">
+        <h2>手動で追加する場合</h2>
+        <p>OBS にブラウザソースを追加し、URL に <code id="overlay-url"></code> を入れ、幅 1920、高さ 1080 にします。</p>
+        <button id="copy-url">URL をコピー</button>
+        <span id="copy-result" class="hint"></span>
+      </div>
+    </section>
+  </main>
 
   <script type="module" src="main.js"></script>
 </body>

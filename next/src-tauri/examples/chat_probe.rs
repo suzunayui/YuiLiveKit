@@ -41,7 +41,7 @@ async fn main() {
                 Ok(Notice::Status { platform, status, detail }) => {
                     println!("status {} {status}{}", platform.as_str(), detail.map(|d| format!(" ({d})")).unwrap_or_default());
                 }
-                Ok(Notice::Reset) => {}
+                Ok(_) => {}
                 Err(_) => break,
             }
         }

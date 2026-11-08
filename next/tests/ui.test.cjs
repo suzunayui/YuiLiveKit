@@ -18,52 +18,106 @@ function serve() {
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server)));
 }
 
-// window.__TAURI__ stand-in: records invoke calls and lets the test fire events.
-const fakeTauri = state => {
+const area = (x, extra = {}) => ({ visible: true, x, y: 100, width: 400, height: 300, font_size: 24, ...extra });
+const defaultLayout = {
+  comments: { ...area(24), max: 12, background: '#000000c7', text_color: '#ffffff', author_color: '#ffd8f8', show_icons: true },
+  niconico: { ...area(0, { visible: false }), duration: 8, color: '#ffffff' },
+  participants: { ...area(1380, { visible: false }), horizontal: false, title: '参加待ち' },
+  ohayo: { ...area(1500, { visible: false }), label: 'おはよう' },
+};
+
+const message = (key, extra = {}) => ({
+  type: 'message', key, row_id: Number(key.replace(/\D/g, '')) || 1, stream_id: 1, platform: 'youtube', id: key, author_id: 'UC1',
+  author: 'Viewer', icon: null, kind: 'text', text: 'hi', parts: [{ type: 'text', text: 'hi' }], amount_micros: null, currency: null,
+  amount_text: null, colors: null, badges: {}, created_ms: Date.UTC(2026, 10, 8, 3, 4), first_time: false, last_stream_ms: null,
+  last_stream_ago: null, ...extra,
+});
+
+// window.__TAURI__ stand-in: records invoke calls, answers like the app, and lets the test fire events.
+const fakeTauri = ({ state }) => {
   const listeners = {};
   window.calls = [];
   window.fire = (name, payload) => (listeners[name] || []).forEach(fn => fn({ payload }));
+  let support = state.support;
+  let participants = state.participants;
+  let layouts = state.layouts;
+  let ohayo = state.ohayo;
   window.__TAURI__ = {
     core: {
-      invoke: async (command, args) => {
+      invoke: async (command, args = {}) => {
         window.calls.push([command, args]);
-        if (command === 'get_state') return state;
-        if (command === 'start_chat' && !args.youtube && !args.twitch) throw 'YouTubeかTwitchのどちらかを入力してください';
-        if (command === 'import_legacy') return { streams: 3, viewers: 10, messages: 42 };
-        return null;
+        switch (command) {
+          case 'get_state': return state;
+          case 'start_chat':
+            if (!args.youtube && !args.twitch) throw 'YouTubeかTwitchのどちらかを入力してください';
+            return null;
+          case 'import_legacy': return { streams: 3, viewers: 10, messages: 42 };
+          case 'set_support_read':
+            support = support.map(s => (args.ids.includes(s.row_id) ? { ...s, read: args.read } : s));
+            return support;
+          case 'set_participant_status':
+            participants = participants.map(p => (p.id === args.id ? { ...p, status: args.status } : p)).filter(p => p.status !== 'removed');
+            return participants;
+          case 'clear_participants': participants = participants.filter(p => args.mode === 'done' && p.status !== 'done'); return participants;
+          case 'reorder_participants': return participants;
+          case 'adjust_ohayo': ohayo = { ...ohayo, adjustment: ohayo.adjustment + args.delta, count: Math.max(0, ohayo.count + args.delta) }; return ohayo;
+          case 'reset_ohayo': ohayo = { detected: 0, adjustment: 0, count: 0 }; return ohayo;
+          case 'set_tool_settings': return { participant_keyword: args.participantKeyword, ohayo_keywords: args.ohayoKeywords };
+          case 'save_layout':
+            if (!/^[A-Za-z0-9_-]{1,32}$/.test(args.name)) throw '配置の名前は半角英数字、-、_ の32文字までにしてください';
+            layouts = { ...layouts, [args.name]: args.layout };
+            return layouts;
+          case 'delete_layout': { const { [args.name]: _, ...rest } = layouts; layouts = rest; return layouts; }
+          case 'obs_plugin_status': return { state: 'missing', path: 'C:\\ProgramData\\obs-studio\\plugins\\yui-live-kit\\bin\\64bit\\yui-live-kit.dll', obs_running: false };
+          case 'install_obs_plugin': return { state: 'installed', path: '', obs_running: false };
+          default: return null;
+        }
       },
     },
     event: { listen: async (name, fn) => { (listeners[name] ||= []).push(fn); } },
   };
 };
 
-const message = (key, extra = {}) => ({
-  type: 'message', key, stream_id: 1, platform: 'youtube', id: key, author_id: 'UC1', author: 'Viewer', icon: null,
-  kind: 'text', text: 'hi', parts: [{ type: 'text', text: 'hi' }], amount_micros: null, currency: null, amount_text: null,
-  colors: null, badges: {}, created_ms: Date.UTC(2026, 10, 8, 3, 4), first_time: false, last_stream_ms: null, last_stream_ago: null, ...extra,
-});
+async function open(browser, server, state) {
+  const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(fakeTauri, { state });
+  await page.goto(`http://127.0.0.1:${server.address().port}/index.html`);
+  await page.waitForFunction(() => window.calls.some(c => c[0] === 'get_state'));
+  return { page, errors };
+}
 
-test('the settings window lists chat safely and drives the app', async () => {
+function baseState(extra = {}) {
+  return {
+    overlay_url: 'http://127.0.0.1:5000/overlay', server_error: null, statuses: {},
+    messages: [message('youtube:1', { text: 'earlier', parts: [{ type: 'text', text: 'earlier' }] })],
+    participants: [
+      { id: 1, status: 'waiting', author: 'First', icon: null, text: '参加希望', platform: 'youtube', created_ms: 1 },
+      { id: 2, status: 'waiting', author: 'Second', icon: null, text: '参加希望！', platform: 'youtube', created_ms: 2 },
+      { id: 3, status: 'done', author: 'Done', icon: null, text: '参加希望', platform: 'youtube', created_ms: 0 },
+    ],
+    ohayo: { detected: 2, adjustment: 0, count: 2 },
+    support: [
+      { ...message('youtube:11', { kind: 'paid', amount_text: '¥1,000', author: 'Fan', text: 'thanks' }), read: false },
+      { ...message('youtube:12', { kind: 'membership', author: 'Member', text: 'joined' }), read: true },
+    ],
+    tool_settings: { participant_keyword: '参加希望', ohayo_keywords: ['おはよ', 'おっは'] },
+    layouts: { default: defaultLayout },
+    legacy_imported: false, legacy_candidates: ['C:\\Users\\a\\AppData\\Roaming\\YuiLiveKit\\comments.db'],
+    ...extra,
+  };
+}
+
+test('home and comments: collection, status, safe chat text and history', async () => {
   const server = await serve();
   const browser = await chromium.launch({ channel: 'msedge' });
   try {
-    const page = await browser.newPage();
-    const errors = [];
-    page.on('pageerror', error => errors.push(error.message));
-    await page.addInitScript(fakeTauri, {
-      overlay_url: 'http://127.0.0.1:5000/overlay', server_error: null, statuses: {},
-      messages: [message('youtube:old', { text: 'earlier' })],
-      legacy_imported: false, legacy_candidates: ['C:\\Users\\a\\AppData\\Roaming\\yt-overlay\\comments.db'],
-    });
-    await page.goto(`http://127.0.0.1:${server.address().port}/index.html`);
-    await page.waitForFunction(() => document.querySelectorAll('#comments li').length === 1);
-    assert.equal(await page.textContent('#overlay-url'), 'http://127.0.0.1:5000/overlay');
+    const { page, errors } = await open(browser, server, baseState());
     assert.equal(await page.isVisible('#legacy'), true, 'offers the one-time import');
-
     await page.click('#start');
     await page.waitForFunction(() => !document.querySelector('#start-error').hidden);
     assert.match(await page.textContent('#start-error'), /どちらか/);
-
     await page.fill('#youtube', '@yui');
     await page.click('#start');
     assert.deepEqual(await page.evaluate(() => window.calls.find(c => c[0] === 'start_chat' && c[1].youtube)), ['start_chat', { youtube: '@yui', twitch: '' }]);
@@ -71,25 +125,87 @@ test('the settings window lists chat safely and drives the app', async () => {
     assert.equal(await page.textContent('#statuses'), 'YouTube: 取得中');
     assert.equal(await page.isDisabled('#start'), true);
 
-    await page.evaluate(m => window.fire('chat', m), message('youtube:new', {
-      author: '<b>name</b>', parts: [{ type: 'text', text: '<img src=x onerror=alert(1)>' }], first_time: true,
-    }));
-    await page.evaluate(m => window.fire('chat', m), message('youtube:back', { last_stream_ms: Date.UTC(2026, 10, 1), last_stream_ago: 3 }));
+    await page.click('[data-tab="comments"]');
+    await page.evaluate(m => window.fire('chat', m), message('youtube:2', { author: '<b>name</b>', parts: [{ type: 'text', text: '<img src=x onerror=alert(1)>' }], first_time: true }));
+    await page.evaluate(m => window.fire('chat', m), message('youtube:3', { last_stream_ms: Date.UTC(2026, 10, 1), last_stream_ago: 3 }));
     await page.waitForFunction(() => document.querySelectorAll('#comments li').length === 3);
     assert.equal(await page.$$eval('#comments img', imgs => imgs.length), 0, 'markup stays text (K7)');
-    assert.match(await page.textContent('[data-key="youtube:new"]'), /<b>name<\/b>初見<img src=x onerror=alert\(1\)>/);
-    assert.match(await page.textContent('[data-key="youtube:back"]'), /前回 11\/1（3回前）/);
+    assert.match(await page.textContent('[data-key="youtube:2"]'), /<b>name<\/b>初見<img src=x onerror=alert\(1\)>/);
+    assert.match(await page.textContent('[data-key="youtube:3"]'), /前回 11\/1（3回前）/);
+    await page.evaluate(() => window.fire('chat', { type: 'deleted', keys: ['youtube:2'] }));
+    assert.equal(await page.$('#comments [data-key="youtube:2"]'), null, 'deleted comments leave the list (K1)');
 
-    await page.evaluate(() => window.fire('chat', { type: 'deleted', keys: ['youtube:new'] }));
-    assert.equal(await page.$('[data-key="youtube:new"]'), null, 'deleted comments leave the list (K1)');
-    await page.evaluate(() => window.fire('chat', { type: 'reset' }));
-    assert.equal(await page.$$eval('#comments li', items => items.length), 0);
-
+    await page.click('[data-tab="home"]');
+    await page.click('#ohayo-plus');
+    await page.waitForFunction(() => document.getElementById('ohayo-count').textContent === '3');
+    await page.click('#ohayo-reset');
+    await page.waitForFunction(() => document.getElementById('ohayo-count').textContent === '0');
+    await page.fill('#ohayo-keywords', 'おはよ\nおっは\nohayo');
+    await page.click('#ohayo-keywords-save');
+    await page.waitForFunction(() => document.getElementById('ohayo-keywords-result').textContent === '保存しました');
+    assert.deepEqual((await page.evaluate(() => window.calls.find(c => c[0] === 'set_tool_settings')))[1].ohayoKeywords, ['おはよ', 'おっは', 'ohayo']);
     await page.click('#legacy-import');
     await page.waitForFunction(() => document.querySelector('#legacy-result').textContent.includes('42件'));
-    await page.evaluate(() => window.fire('chat', { type: 'status', platform: 'youtube', status: 'stopped', detail: '配信が終了したため、チャットの取得を停止しました' }));
-    assert.match(await page.textContent('#statuses'), /停止中（配信が終了/);
-    assert.equal(await page.isDisabled('#start'), false);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test('support, participants, layout editor and OBS tabs', async () => {
+  const server = await serve();
+  const browser = await chromium.launch({ channel: 'msedge' });
+  try {
+    const { page, errors } = await open(browser, server, baseState());
+    assert.equal(await page.textContent('#support-unread'), '（1）');
+    await page.click('[data-tab="support"]');
+    await page.check('#support-unread-only');
+    assert.deepEqual(await page.$$eval('#support li', items => items.map(i => i.dataset.key)), ['youtube:11']);
+    await page.click('#support [data-key="youtube:11"]');
+    await page.waitForFunction(() => document.querySelectorAll('#support li').length === 0);
+    assert.equal(await page.textContent('#support-unread'), '');
+    await page.evaluate(m => window.fire('chat', m), message('youtube:13', { kind: 'paid', amount_text: '$5.00', author: 'New' }));
+    await page.waitForFunction(() => document.querySelectorAll('#support li').length === 1);
+
+    await page.click('[data-tab="participants"]');
+    assert.deepEqual(await page.$$eval('#participants li .name', n => n.map(x => x.textContent)), ['First', 'Second', 'Done']);
+    await page.click('#participants li:first-child .actions button:first-child');
+    await page.waitForFunction(() => document.querySelector('#participants li:first-child').classList.contains('done'));
+    await page.check('#participants-hide-done');
+    assert.deepEqual(await page.$$eval('#participants li .name', n => n.map(x => x.textContent)), ['Second']);
+    await page.evaluate(() => window.fire('chat', { type: 'participants', items: [] }));
+    assert.equal(await page.$$eval('#participants li', n => n.length), 0, 'the list follows the app');
+
+    await page.click('[data-tab="layout"]');
+    assert.equal(await page.$$eval('#preview .box', b => b.length), 4);
+    const box = await page.$('#preview .box.selected');
+    const before = await box.boundingBox();
+    await page.mouse.move(before.x + 20, before.y + 20);
+    await page.mouse.down();
+    await page.mouse.move(before.x + 120, before.y + 70, { steps: 4 });
+    await page.mouse.up();
+    const x = Number(await page.inputValue('#widget-form input[data-field="x"]'));
+    assert.ok(x > 24, `dragging moves the box (x=${x})`);
+    await page.fill('#widget-form input[data-field="font_size"]', '40');
+    await page.dispatchEvent('#widget-form input[data-field="font_size"]', 'change');
+    await page.click('#layout-save');
+    await page.waitForFunction(() => document.getElementById('layout-result').textContent.startsWith('保存しました'));
+    const saved = (await page.evaluate(() => window.calls.filter(c => c[0] === 'save_layout').pop()))[1];
+    assert.equal(saved.name, 'default');
+    assert.equal(saved.layout.comments.font_size, 40);
+    assert.equal(saved.layout.comments.x, x);
+    await page.fill('#layout-new-name', 'bad name');
+    await page.click('#layout-add');
+    await page.waitForFunction(() => document.getElementById('layout-result').textContent.includes('半角英数字'));
+    await page.fill('#layout-new-name', 'game');
+    await page.click('#layout-add');
+    await page.waitForFunction(() => document.getElementById('layout-url').textContent.endsWith('?layout=game'));
+
+    await page.click('[data-tab="obs"]');
+    await page.waitForFunction(() => document.getElementById('plugin-state').textContent === '未導入');
+    await page.click('#plugin-install');
+    await page.waitForFunction(() => document.getElementById('plugin-result').textContent.startsWith('導入しました'));
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

@@ -2,7 +2,10 @@
 
 pub mod core;
 pub mod db;
+pub mod layout;
 pub mod model;
+pub mod obs_plugin;
 pub mod server;
+pub mod tools;
 pub mod twitch;
 pub mod youtube;

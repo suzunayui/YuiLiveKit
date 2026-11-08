@@ -27,6 +27,7 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 regex = "1"
 url = "2"
 futures-util = "0.3"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = "s"

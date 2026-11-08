@@ -67,6 +67,13 @@ async fn main() {
                     core.ingest(id, Batch { messages: vec![message], removals: vec![] });
                 }
             }
+            Some("save_layout") => {
+                let name = text(&command, "name").unwrap_or_default();
+                let layout = serde_json::from_value(command["layout"].clone()).unwrap_or_default();
+                if let Err(error) = core.save_layout(&name, layout) {
+                    eprintln!("save_layout: {error}");
+                }
+            }
             Some(op @ ("remove" | "remove_author")) => {
                 let removal = if op == "remove" {
                     Removal::Message(text(&command, "id").unwrap_or_default())

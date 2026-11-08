@@ -54,6 +54,28 @@ CREATE INDEX IF NOT EXISTS idx_messages_stream_time ON messages(stream_id, creat
 CREATE INDEX IF NOT EXISTS idx_messages_viewer_time ON messages(viewer_id, created_ms);
 CREATE INDEX IF NOT EXISTS idx_messages_deleted ON messages(deleted_ms) WHERE deleted_ms IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS participants (
+  id INTEGER PRIMARY KEY,
+  stream_id INTEGER NOT NULL REFERENCES streams(id),
+  message_id INTEGER NOT NULL UNIQUE REFERENCES messages(id),
+  viewer_id INTEGER REFERENCES viewers(id),
+  status TEXT NOT NULL,
+  queue_order INTEGER NOT NULL,
+  updated_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_participants_stream ON participants(stream_id, status, queue_order);
+
+CREATE TABLE IF NOT EXISTS ohayo (
+  stream_id INTEGER PRIMARY KEY REFERENCES streams(id),
+  adjustment INTEGER NOT NULL DEFAULT 0,
+  reset_ms INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS support_read (
+  message_id INTEGER PRIMARY KEY REFERENCES messages(id),
+  read_ms INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL
@@ -66,7 +88,7 @@ const LEGACY_IMPORT_KEY: &str = "legacy_import";
 
 pub type Result<T> = std::result::Result<T, String>;
 
-fn err(e: rusqlite::Error) -> String {
+pub(crate) fn err(e: rusqlite::Error) -> String {
     e.to_string()
 }
 
@@ -74,6 +96,10 @@ fn err(e: rusqlite::Error) -> String {
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Shown {
     pub key: String,
+    /// The database row; screens use it to refer back to the message.
+    pub row_id: i64,
+    #[serde(skip)]
+    pub viewer_id: Option<i64>,
     pub stream_id: i64,
     #[serde(flatten)]
     pub message: ChatMessage,
@@ -208,6 +234,10 @@ impl Db {
         Ok(Self { conn })
     }
 
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     pub fn ensure_stream(&self, platform: Platform, external_id: &str, now_ms: i64) -> Result<i64> {
         ensure_stream(&self.conn, platform, external_id, now_ms)
     }
@@ -269,6 +299,8 @@ impl Db {
         }
         Ok(Shown {
             key: message.key(),
+            row_id,
+            viewer_id: Some(viewer_id),
             stream_id,
             message,
             first_time,
@@ -310,6 +342,11 @@ impl Db {
 
     /// Newest messages of the given streams, oldest first, without deleted ones.
     pub fn recent(&self, stream_ids: &[i64], limit: usize) -> Result<Vec<Shown>> {
+        self.select_shown(stream_ids, "", limit)
+    }
+
+    /// Like `recent`, with an extra SQL condition on `m` (the messages table).
+    pub(crate) fn select_shown(&self, stream_ids: &[i64], extra: &str, limit: usize) -> Result<Vec<Shown>> {
         if stream_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -318,7 +355,7 @@ impl Db {
             "SELECT m.id, m.stream_id, m.viewer_id, s.platform, m.platform_message_id, v.platform_user_id, m.author_name, m.icon_url,
                     m.kind, m.text, m.parts_json, m.amount_micros, m.currency, m.amount_text, m.colors_json, m.badges_json, m.created_ms
              FROM messages m JOIN streams s ON s.id = m.stream_id LEFT JOIN viewers v ON v.id = m.viewer_id
-             WHERE m.stream_id IN ({placeholders}) AND m.deleted_ms IS NULL
+             WHERE m.stream_id IN ({placeholders}) AND m.deleted_ms IS NULL {extra}
              ORDER BY m.created_ms DESC, m.id DESC LIMIT {limit}"
         );
         let mut statement = self.conn.prepare(&sql).map_err(err)?;
@@ -353,7 +390,16 @@ impl Db {
             .into_iter()
             .map(|(row_id, stream_id, viewer_id, message)| match viewer_id {
                 Some(viewer_id) => self.shown(stream_id, viewer_id, row_id, message),
-                None => Ok(Shown { key: message.key(), stream_id, message, first_time: false, last_stream_ms: None, last_stream_ago: None }),
+                None => Ok(Shown {
+                    key: message.key(),
+                    row_id,
+                    viewer_id: None,
+                    stream_id,
+                    message,
+                    first_time: false,
+                    last_stream_ms: None,
+                    last_stream_ago: None,
+                }),
             })
             .collect::<Result<Vec<_>>>()?;
         shown.reverse();

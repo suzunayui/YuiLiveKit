@@ -8,11 +8,21 @@ use std::{
 
 use serde::Serialize;
 use tauri::{Emitter, Manager};
-use yui_live_kit::{core::Core, db::Db};
+use yui_live_kit::{
+    core::{Core, Status, ToolSettings},
+    db::{Db, ImportSummary, Shown},
+    layout::{Layout, Layouts},
+    obs_plugin::{self, PluginStatus},
+    tools::{ClearMode, Ohayo, Participant, Support},
+};
 
 const DEFAULT_PORT: u16 = 5000;
 const CANVAS: (u32, u32) = (1920, 1080);
 const LIST_SIZE: usize = 300;
+/// Built by obs-plugin/build.cmd and copied to obs-plugin/dist, so the app can install it.
+const OBS_PLUGIN: &[u8] = include_bytes!("../../obs-plugin/dist/yui-live-kit.dll");
+
+type CoreState<'a> = tauri::State<'a, Arc<Core>>;
 
 fn port() -> u16 {
     std::env::var("YUI_LIVE_KIT_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_PORT)
@@ -47,36 +57,46 @@ struct ServerError(Mutex<Option<String>>);
 struct AppState {
     overlay_url: String,
     server_error: Option<String>,
-    statuses: std::collections::BTreeMap<&'static str, yui_live_kit::core::Status>,
-    messages: Vec<yui_live_kit::db::Shown>,
+    statuses: std::collections::BTreeMap<&'static str, Status>,
+    messages: Vec<Shown>,
+    participants: Vec<Participant>,
+    ohayo: Ohayo,
+    support: Vec<Support>,
+    tool_settings: ToolSettings,
+    layouts: Layouts,
     legacy_imported: bool,
     legacy_candidates: Vec<String>,
 }
 
 #[tauri::command]
-fn get_state(core: tauri::State<'_, Arc<Core>>, error: tauri::State<'_, ServerError>) -> AppState {
+fn get_state(core: CoreState<'_>, error: tauri::State<'_, ServerError>) -> AppState {
     AppState {
         overlay_url: overlay_url(port()),
         server_error: error.0.lock().unwrap().clone(),
         statuses: core.statuses(),
         messages: core.snapshot(LIST_SIZE),
+        participants: core.participants(),
+        ohayo: core.ohayo(),
+        support: core.support(),
+        tool_settings: core.tool_settings(),
+        layouts: core.layouts(),
         legacy_imported: core.db().legacy_imported().unwrap_or(false),
         legacy_candidates: legacy_candidates(),
     }
 }
 
 #[tauri::command]
-async fn start_chat(core: tauri::State<'_, Arc<Core>>, youtube: String, twitch: String) -> Result<(), String> {
+async fn start_chat(core: CoreState<'_>, youtube: String, twitch: String) -> Result<(), String> {
     core.start(&youtube, &twitch)
 }
 
 #[tauri::command]
-fn stop_chat(core: tauri::State<'_, Arc<Core>>) {
+fn stop_chat(core: CoreState<'_>) {
     core.stop();
 }
 
 #[tauri::command]
-async fn import_legacy(core: tauri::State<'_, Arc<Core>>, path: String) -> Result<yui_live_kit::db::ImportSummary, String> {
+async fn import_legacy(core: CoreState<'_>, path: String) -> Result<ImportSummary, String> {
     if !legacy_candidates().contains(&path) {
         return Err("取り込めるのは、見つかった以前のデータベースだけです".into());
     }
@@ -84,6 +104,66 @@ async fn import_legacy(core: tauri::State<'_, Arc<Core>>, path: String) -> Resul
     tauri::async_runtime::spawn_blocking(move || core.db().import_legacy(Path::new(&path)))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn set_participant_status(core: CoreState<'_>, id: i64, status: String) -> Result<Vec<Participant>, String> {
+    core.set_participant_status(id, &status)
+}
+
+#[tauri::command]
+fn clear_participants(core: CoreState<'_>, mode: ClearMode) -> Result<Vec<Participant>, String> {
+    core.clear_participants(mode)
+}
+
+#[tauri::command]
+fn reorder_participants(core: CoreState<'_>, ids: Vec<i64>) -> Result<Vec<Participant>, String> {
+    core.reorder_participants(&ids)
+}
+
+#[tauri::command]
+fn adjust_ohayo(core: CoreState<'_>, delta: i64) -> Result<Ohayo, String> {
+    core.adjust_ohayo(delta.clamp(-1000, 1000))
+}
+
+#[tauri::command]
+fn reset_ohayo(core: CoreState<'_>) -> Result<Ohayo, String> {
+    core.reset_ohayo()
+}
+
+#[tauri::command]
+fn set_tool_settings(core: CoreState<'_>, participant_keyword: String, ohayo_keywords: Vec<String>) -> Result<ToolSettings, String> {
+    core.set_tool_settings(&participant_keyword, &ohayo_keywords)
+}
+
+#[tauri::command]
+fn set_support_read(core: CoreState<'_>, ids: Vec<i64>, read: bool) -> Result<Vec<Support>, String> {
+    core.set_support_read(&ids, read)
+}
+
+#[tauri::command]
+fn save_layout(core: CoreState<'_>, name: String, layout: Layout) -> Result<Layouts, String> {
+    core.save_layout(&name, layout)
+}
+
+#[tauri::command]
+fn delete_layout(core: CoreState<'_>, name: String) -> Result<Layouts, String> {
+    core.delete_layout(&name)
+}
+
+#[tauri::command]
+async fn obs_plugin_status() -> PluginStatus {
+    tauri::async_runtime::spawn_blocking(|| obs_plugin::status(OBS_PLUGIN)).await.unwrap_or(PluginStatus {
+        state: obs_plugin::PluginState::Missing,
+        path: String::new(),
+        obs_running: false,
+    })
+}
+
+#[tauri::command]
+async fn install_obs_plugin(app: tauri::AppHandle) -> Result<PluginStatus, String> {
+    let scratch = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("obs-plugin");
+    tauri::async_runtime::spawn_blocking(move || obs_plugin::install(OBS_PLUGIN, &scratch)).await.map_err(|e| e.to_string())?
 }
 
 fn main() {
@@ -97,7 +177,23 @@ fn main() {
             }
         }))
         .manage(ServerError(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![get_state, start_chat, stop_chat, import_legacy])
+        .invoke_handler(tauri::generate_handler![
+            get_state,
+            start_chat,
+            stop_chat,
+            import_legacy,
+            set_participant_status,
+            clear_participants,
+            reorder_participants,
+            adjust_ohayo,
+            reset_ohayo,
+            set_tool_settings,
+            set_support_read,
+            save_layout,
+            delete_layout,
+            obs_plugin_status,
+            install_obs_plugin,
+        ])
         .setup(move |app| {
             let data_dir = app.path().app_data_dir()?;
             if let Err(error) = write_obs_source_file(&data_dir, port) {
@@ -122,7 +218,9 @@ fn main() {
                 }
                 .await;
                 if let Err(error) = result {
-                    let message = format!("ポート{port}を使えないため、OBSに表示できません。ほかのアプリが使っていないか確認してください（{error}）");
+                    let message = format!(
+                        "ポート{port}を使えないため、OBSに表示できません。ほかのアプリが使っていないか確認してください（{error}）"
+                    );
                     eprintln!("{message}");
                     *handle.state::<ServerError>().0.lock().unwrap() = Some(message.clone());
                     let _ = handle.emit("server-error", message);

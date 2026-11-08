@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::{
     extract::{
         ws::{rejection::WebSocketUpgradeRejection, Message, WebSocket, WebSocketUpgrade},
-        Request, State,
+        Query, Request, State,
     },
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
@@ -66,28 +66,43 @@ pub fn router(core: Arc<Core>, port: u16) -> Router {
         .with_state(state)
 }
 
+#[derive(serde::Deserialize)]
+struct OverlayQuery {
+    layout: Option<String>,
+}
+
 /// The upgrade is taken as a Result so the origin is checked before anything else answers.
 async fn overlay_ws(
     headers: HeaderMap,
     State(state): State<AppState>,
+    Query(query): Query<OverlayQuery>,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
     if !origin_allowed(&headers, &state.origins) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    let layout = query.layout.filter(|name| crate::layout::valid_name(name)).unwrap_or_else(|| crate::layout::DEFAULT_NAME.into());
     match ws {
-        Ok(ws) => ws.on_upgrade(move |socket| overlay_socket(socket, state.core)),
+        Ok(ws) => ws.on_upgrade(move |socket| overlay_socket(socket, state.core, layout)),
         Err(rejection) => rejection.into_response(),
     }
 }
 
-fn snapshot_json(core: &Core) -> String {
-    serde_json::json!({"type": "snapshot", "messages": core.snapshot(SNAPSHOT_SIZE)}).to_string()
+/// Everything the page needs to draw from scratch.
+fn snapshot_json(core: &Core, layout: &str) -> String {
+    serde_json::json!({
+        "type": "snapshot",
+        "messages": core.snapshot(SNAPSHOT_SIZE),
+        "layout": core.layout(layout),
+        "participants": core.participants(),
+        "ohayo": core.ohayo(),
+    })
+    .to_string()
 }
 
-async fn overlay_socket(mut socket: WebSocket, core: Arc<Core>) {
+async fn overlay_socket(mut socket: WebSocket, core: Arc<Core>, layout: String) {
     let mut notices = core.subscribe();
-    if socket.send(Message::Text(snapshot_json(&core).into())).await.is_err() {
+    if socket.send(Message::Text(snapshot_json(&core, &layout).into())).await.is_err() {
         return;
     }
     loop {
@@ -95,9 +110,10 @@ async fn overlay_socket(mut socket: WebSocket, core: Arc<Core>) {
             notice = notices.recv() => {
                 let text = match notice {
                     Ok(Notice::Status { .. }) => continue,
+                    Ok(Notice::Layout { name, .. }) if name != layout => continue,
                     Ok(notice) => serde_json::to_string(&notice).unwrap_or_default(),
                     // Too far behind: start over from the current state.
-                    Err(RecvError::Lagged(_)) => snapshot_json(&core),
+                    Err(RecvError::Lagged(_)) => snapshot_json(&core, &layout),
                     Err(RecvError::Closed) => break,
                 };
                 if socket.send(Message::Text(text.into())).await.is_err() {
