@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use serde::Serialize;
@@ -12,7 +13,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     db::{Db, Shown},
     layout::{self, Layout, Layouts},
-    model::{Batch, Platform},
+    model::{Batch, ChatMessage, Platform},
+    speech::{self, AiSettings, Player, Queue, RateLimit, Secrets, Source, SpeechSettings, Utterance, Viewers},
     tools::{self, ClearMode, Ohayo, Participant, Support},
     twitch, youtube,
 };
@@ -20,6 +22,11 @@ use crate::{
 const LAYOUTS_KEY: &str = "layouts";
 const PARTICIPANT_KEYWORD_KEY: &str = "participant_keyword";
 const OHAYO_KEYWORDS_KEY: &str = "ohayo_keywords";
+const SPEECH_KEY: &str = "speech";
+const AI_KEY: &str = "ai";
+const VIEWERS_KEY: &str = "viewers";
+/// Chat sent this long before a start still counts as new, for clocks that differ a little.
+const START_GRACE_MS: i64 = 2000;
 
 /// What the screens and the overlay hear about.
 #[derive(Clone, Debug, Serialize)]
@@ -33,6 +40,8 @@ pub enum Notice {
     Participants { items: Vec<Participant> },
     Ohayo(Ohayo),
     Layout { name: String, layout: Layout },
+    /// Something went wrong with reading aloud or AI replies.
+    Speech { message: String },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -50,10 +59,38 @@ pub struct ToolSettings {
 
 #[derive(Default)]
 struct Session {
+    /// Chat older than this is history and is never read aloud or answered.
+    started_ms: i64,
     streams: Vec<i64>,
     cancel: Option<CancellationToken>,
     statuses: BTreeMap<&'static str, Status>,
     ohayo: Ohayo,
+}
+
+/// Where speech and AI replies go. Tests swap these for fakes.
+pub struct Backends {
+    pub player: Arc<dyn Player>,
+    pub secrets: Box<dyn Secrets>,
+    pub voicevox: String,
+    pub openai: Option<String>,
+}
+
+impl Default for Backends {
+    fn default() -> Self {
+        Self {
+            player: Arc::new(speech::SpeakerPlayer),
+            secrets: Box::new(speech::CredentialManager),
+            voicevox: speech::VOICEVOX_BASE.into(),
+            openai: None,
+        }
+    }
+}
+
+#[derive(Default)]
+struct Voices {
+    speech: SpeechSettings,
+    ai: AiSettings,
+    viewers: Viewers,
 }
 
 pub struct Core {
@@ -61,6 +98,14 @@ pub struct Core {
     notices: broadcast::Sender<Notice>,
     session: Mutex<Session>,
     settings: Mutex<ToolSettings>,
+    voices: Mutex<Voices>,
+    queue: Mutex<Queue>,
+    wake: tokio::sync::Notify,
+    rate: Mutex<RateLimit>,
+    http: reqwest::Client,
+    backends: Backends,
+    /// For background work that outlives the call that started it.
+    me: std::sync::Weak<Core>,
 }
 
 pub fn now_ms() -> i64 {
@@ -78,8 +123,16 @@ fn clean_keywords(keywords: &[String]) -> Vec<String> {
     out
 }
 
+fn load<T: serde::de::DeserializeOwned + Default>(db: &Db, key: &str) -> T {
+    db.setting(key).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
 impl Core {
     pub fn new(db: Db) -> Arc<Self> {
+        Self::with_backends(db, Backends::default())
+    }
+
+    pub fn with_backends(db: Db, backends: Backends) -> Arc<Self> {
         let participant_keyword = db
             .setting(PARTICIPANT_KEYWORD_KEY)
             .ok()
@@ -92,12 +145,24 @@ impl Core {
             .flatten()
             .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
             .unwrap_or_else(|| tools::DEFAULT_OHAYO_KEYWORDS.iter().map(|k| k.to_string()).collect());
+        let voices = Voices {
+            speech: load::<SpeechSettings>(&db, SPEECH_KEY).sanitized(),
+            ai: load::<AiSettings>(&db, AI_KEY).sanitized(),
+            viewers: load(&db, VIEWERS_KEY),
+        };
         let (notices, _) = broadcast::channel(1024);
-        Arc::new(Self {
+        Arc::new_cyclic(|me| Self {
+            me: me.clone(),
             db: Mutex::new(db),
             notices,
-            session: Mutex::new(Session::default()),
+            session: Mutex::new(Session { started_ms: i64::MAX, ..Session::default() }),
             settings: Mutex::new(ToolSettings { participant_keyword, ohayo_keywords }),
+            voices: Mutex::new(voices),
+            queue: Mutex::new(Queue::default()),
+            wake: tokio::sync::Notify::new(),
+            rate: Mutex::new(RateLimit::default()),
+            http: speech::http(),
+            backends,
         })
     }
 
@@ -151,7 +216,9 @@ impl Core {
             session.streams.clear();
             session.statuses.clear();
             session.ohayo = Ohayo::default();
+            session.started_ms = now_ms() - START_GRACE_MS;
         }
+        self.queue.lock().unwrap().clear();
         self.notify(Notice::Reset);
         self.notify(Notice::Participants { items: Vec::new() });
         self.notify(Notice::Ohayo(Ohayo::default()));
@@ -181,12 +248,22 @@ impl Core {
                 .iter()
                 .filter(|s| db.request_participant(s, &settings.participant_keyword).unwrap_or(false))
                 .count();
+            for s in &shown {
+                let _ = db.record_emoji(&s.message);
+            }
             let now = now_ms();
             let deleted: Vec<String> =
                 batch.removals.iter().flat_map(|r| db.apply_removal(stream_id, r, now).unwrap_or_default()).collect();
             (shown, deleted, joined)
         };
         let may_change_ohayo = !deleted.is_empty() || shown.iter().any(|s| greeted(&s.message.text));
+        let started_ms = self.session.lock().unwrap().started_ms;
+        for message in &shown {
+            if message.message.created_ms >= started_ms {
+                self.speak_message(stream_id, &message.message);
+                self.maybe_answer(stream_id, &message.message);
+            }
+        }
         for message in shown {
             self.notify(Notice::Message(message));
         }
@@ -325,6 +402,229 @@ impl Core {
         Ok(layouts)
     }
 
+    // --- Reading aloud and AI replies ---------------------------------------------------
+
+    fn self_arc(&self) -> std::sync::Weak<Core> {
+        self.me.clone()
+    }
+
+    pub fn speech_settings(&self) -> SpeechSettings {
+        self.voices.lock().unwrap().speech.clone()
+    }
+
+    pub fn ai_settings(&self) -> AiSettings {
+        self.voices.lock().unwrap().ai.clone()
+    }
+
+    pub fn viewers(&self) -> Viewers {
+        self.voices.lock().unwrap().viewers.clone()
+    }
+
+    pub fn has_api_key(&self) -> bool {
+        self.backends.secrets.get().is_some()
+    }
+
+    fn save<T: Serialize>(&self, key: &str, value: &T) -> Result<(), String> {
+        self.db().set_setting(key, &serde_json::to_value(value).map_err(|e| e.to_string())?)
+    }
+
+    pub fn set_speech_settings(&self, settings: SpeechSettings) -> Result<SpeechSettings, String> {
+        let settings = settings.sanitized();
+        self.save(SPEECH_KEY, &settings)?;
+        if !settings.enabled {
+            self.queue.lock().unwrap().clear();
+        }
+        self.voices.lock().unwrap().speech = settings.clone();
+        Ok(settings)
+    }
+
+    pub fn set_ai_settings(&self, settings: AiSettings) -> Result<AiSettings, String> {
+        let settings = settings.sanitized();
+        self.save(AI_KEY, &settings)?;
+        self.voices.lock().unwrap().ai = settings.clone();
+        Ok(settings)
+    }
+
+    /// Stores the key in the credential store, never in the database. `None` removes it.
+    pub fn set_api_key(&self, key: Option<&str>) -> Result<bool, String> {
+        self.backends.secrets.set(key)?;
+        Ok(self.has_api_key())
+    }
+
+    /// Sets how a viewer's name is read, or clears it with an empty reading.
+    pub fn set_viewer_name(&self, viewer: &str, reading: &str) -> Result<Viewers, String> {
+        let mut voices = self.voices.lock().unwrap();
+        let reading: String = reading.trim().chars().take(30).collect();
+        if reading.is_empty() {
+            voices.viewers.names.remove(viewer);
+        } else {
+            voices.viewers.names.insert(viewer.to_string(), reading);
+        }
+        let viewers = voices.viewers.clone();
+        drop(voices);
+        self.save(VIEWERS_KEY, &viewers)?;
+        Ok(viewers)
+    }
+
+    pub fn set_blocked(&self, viewer: &str, blocked: bool) -> Result<Viewers, String> {
+        let mut voices = self.voices.lock().unwrap();
+        if blocked {
+            voices.viewers.blocked.insert(viewer.to_string());
+        } else {
+            voices.viewers.blocked.remove(viewer);
+        }
+        let viewers = voices.viewers.clone();
+        drop(voices);
+        self.save(VIEWERS_KEY, &viewers)?;
+        Ok(viewers)
+    }
+
+    fn readings(&self) -> BTreeMap<String, String> {
+        self.db()
+            .emoji()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|e| e.reading.map(|r| (e.code, r)))
+            .collect()
+    }
+
+    fn sound_for(&self, message: &ChatMessage) -> Option<(String, f64)> {
+        let emoji = self.db().emoji().unwrap_or_default();
+        message.parts.iter().find_map(|part| match part {
+            crate::model::Part::Emoji { alt, .. } => {
+                emoji.iter().find(|e| &e.code == alt).and_then(|e| e.sound.clone().map(|s| (s, e.volume)))
+            }
+            _ => None,
+        })
+    }
+
+    fn push(&self, utterance: Utterance) {
+        let max = self.voices.lock().unwrap().speech.max_queue;
+        self.queue.lock().unwrap().push(utterance, max);
+        self.wake.notify_one();
+    }
+
+    fn speak_message(&self, stream_id: i64, message: &ChatMessage) {
+        let (settings, viewers) = {
+            let voices = self.voices.lock().unwrap();
+            (voices.speech.clone(), voices.viewers.clone())
+        };
+        if !settings.enabled || !speech::allowed(message, &settings.ng_words, &viewers) {
+            return;
+        }
+        let text = speech::speech_text(message, &settings, &viewers, &self.readings());
+        let sound = self.sound_for(message);
+        if text.is_none() && sound.is_none() {
+            return;
+        }
+        self.push(Utterance {
+            text: text.unwrap_or_default(),
+            voice: settings.voice,
+            source: Some(Source { stream_id, message: message.clone() }),
+            sound,
+        });
+    }
+
+    /// Asks OpenAI for a reply when a comment has a trigger word, within the rate limits.
+    fn maybe_answer(&self, stream_id: i64, message: &ChatMessage) {
+        let (ai, speech_settings, viewers) = {
+            let voices = self.voices.lock().unwrap();
+            (voices.ai.clone(), voices.speech.clone(), voices.viewers.clone())
+        };
+        if !ai.enabled || !speech::triggered(&message.text, &ai.triggers) {
+            return;
+        }
+        if !speech::allowed(message, &speech_settings.ng_words, &viewers) {
+            return;
+        }
+        let Some(key) = self.backends.secrets.get() else { return };
+        let allowed = self.rate.lock().unwrap().try_take(Instant::now(), Duration::from_secs(ai.interval_seconds), ai.hourly_limit);
+        if !allowed {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else { return };
+        let request = speech::ai_request(&ai, &message.author, &message.text);
+        let source = Source { stream_id, message: message.clone() };
+        let http = self.http.clone();
+        let base = self.backends.openai.clone();
+        let core = self.self_arc();
+        handle.spawn(async move {
+            let Some(core) = core.upgrade() else { return };
+            match speech::openai_reply(&http, base.as_deref(), &key, &request).await {
+                Ok(reply) => {
+                    let ng = core.speech_settings().ng_words;
+                    if !speech::has_ng_word(&reply, &ng) {
+                        core.push(Utterance { text: reply, voice: core.ai_settings().voice, source: Some(source), sound: None });
+                    }
+                }
+                Err(message) => core.notify(Notice::Speech { message }),
+            }
+        });
+    }
+
+    /// Reads a line from the settings screen, to try a voice.
+    pub fn speak_test(&self, text: &str, voice: speech::Voice) {
+        let text: String = text.chars().take(speech::MAX_SPOKEN_CHARS).collect();
+        if !text.trim().is_empty() {
+            self.push(Utterance { text, voice, source: None, sound: None });
+        }
+    }
+
+    /// Checked right before speaking: the source may have been deleted, or its viewer blocked
+    /// or an NG word added since it was queued (K15).
+    fn still_speakable(&self, utterance: &Utterance) -> bool {
+        let (ng, viewers) = {
+            let voices = self.voices.lock().unwrap();
+            (voices.speech.ng_words.clone(), voices.viewers.clone())
+        };
+        if speech::has_ng_word(&utterance.text, &ng) {
+            return false;
+        }
+        match &utterance.source {
+            None => true,
+            Some(source) => {
+                !self.db().is_deleted(source.stream_id, &source.message.id).unwrap_or(true)
+                    && speech::allowed(&source.message, &ng, &viewers)
+            }
+        }
+    }
+
+    async fn say(&self, utterance: Utterance) -> Result<(), String> {
+        if let Some((path, volume)) = utterance.sound.clone() {
+            let player = self.backends.player.clone();
+            let audio = tokio::fs::read(&path).await.map_err(|e| format!("効果音を読めません: {e}"))?;
+            tokio::task::spawn_blocking(move || player.play(audio, volume)).await.map_err(|e| e.to_string())??;
+        }
+        if utterance.text.is_empty() {
+            return Ok(());
+        }
+        let wav = speech::voicevox_synthesize(&self.http, &self.backends.voicevox, &utterance.text, &utterance.voice).await?;
+        let player = self.backends.player.clone();
+        let volume = utterance.voice.volume;
+        tokio::task::spawn_blocking(move || player.play(wav, volume)).await.map_err(|e| e.to_string())?
+    }
+
+    /// Speaks queued lines one at a time, for as long as the app runs.
+    pub async fn run_speech(self: Arc<Self>) {
+        loop {
+            let next = self.queue.lock().unwrap().pop();
+            let Some(utterance) = next else {
+                self.wake.notified().await;
+                continue;
+            };
+            if !self.still_speakable(&utterance) {
+                continue;
+            }
+            if let Err(message) = self.say(utterance).await {
+                self.notify(Notice::Speech { message });
+            }
+        }
+    }
+
+    pub async fn voicevox_speakers(&self) -> Result<Vec<speech::Speaker>, String> {
+        speech::voicevox_speakers(&self.http, &self.backends.voicevox).await
+    }
+
     // --- Collection ---------------------------------------------------------------------
 
     /// Validates the inputs, then collects from each given platform. Needs a Tokio runtime.
@@ -388,6 +688,8 @@ impl Core {
 
     /// Stops collecting. What was collected stays on the overlay until the next start.
     pub fn stop(&self) {
+        self.queue.lock().unwrap().clear();
+        self.session.lock().unwrap().started_ms = i64::MAX;
         let platforms: Vec<Platform> = {
             let mut session = self.session.lock().unwrap();
             if let Some(token) = session.cancel.take() {

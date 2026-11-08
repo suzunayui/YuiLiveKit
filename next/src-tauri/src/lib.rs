@@ -6,6 +6,10 @@ pub mod layout;
 pub mod model;
 pub mod obs_plugin;
 pub mod server;
+pub mod speech;
 pub mod tools;
 pub mod twitch;
 pub mod youtube;
+
+#[cfg(test)]
+mod speech_flow_tests;

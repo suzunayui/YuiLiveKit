@@ -16,6 +16,9 @@
     <button role="tab" data-tab="comments">コメント</button>
     <button role="tab" data-tab="support">スパチャ・メンバー <span id="support-unread"></span></button>
     <button role="tab" data-tab="participants">参加管理</button>
+    <button role="tab" data-tab="speech">読み上げ</button>
+    <button role="tab" data-tab="ai">AI返答</button>
+    <button role="tab" data-tab="emoji">絵文字</button>
     <button role="tab" data-tab="layout">配置</button>
     <button role="tab" data-tab="obs">OBS</button>
   </nav>
@@ -91,6 +94,72 @@
         <label>参加のキーワード <input id="participant-keyword"></label>
         <button id="participant-keyword-save">保存</button>
         <span id="participant-keyword-result" class="hint"></span>
+      </div>
+    </section>
+
+    <section data-panel="speech" hidden>
+      <div class="card">
+        <h2>読み上げ（VOICEVOX）</h2>
+        <p class="hint">VOICEVOX を起動しておくと、取得を始めた後のコメントを読み上げます。ブロックした人と NG ワードを含むコメントは読みません。</p>
+        <label class="inline"><input type="checkbox" id="speech-enabled"> 読み上げる</label>
+        <div class="grid">
+          <label>話者 <select id="speech-speaker"></select></label>
+          <label>速さ <input type="number" id="speech-speed" min="0.5" max="2" step="0.1"></label>
+          <label>音量 <input type="number" id="speech-volume" min="0" max="2" step="0.1"></label>
+          <label>待ちの上限 <input type="number" id="speech-max-queue" min="1" max="100"></label>
+        </div>
+        <label class="inline"><input type="checkbox" id="speech-read-name"> 名前も読む</label>
+        <label>置き換え（1行に「元=>読み」） <textarea id="speech-replacements" rows="3" placeholder="www=>わらわら"></textarea></label>
+        <label>NG ワード（含まれていたら読まない、1行に1つ） <textarea id="speech-ng" rows="3"></textarea></label>
+        <div class="buttons">
+          <button id="speech-save" class="primary">保存</button>
+          <button id="speech-reload-speakers">話者を読み込み直す</button>
+          <input id="speech-test-text" value="テストです。読み上げの声を確かめています。">
+          <button id="speech-test">試しに読む</button>
+        </div>
+        <p id="speech-result" class="hint"></p>
+      </div>
+      <div class="card">
+        <h2>名前の読み方とブロック</h2>
+        <p class="hint">コメント一覧の「読み方」「ブロック」から登録します。</p>
+        <ol id="viewer-list" class="list"></ol>
+      </div>
+    </section>
+
+    <section data-panel="ai" hidden>
+      <div class="card">
+        <h2>AI 返答（OpenAI）</h2>
+        <p class="hint">トリガーの言葉を含むコメントにだけ、OpenAI で返事を作って読み上げます。API キーを入れない限り、OpenAI へは通信しません。利用料金は OpenAI のアカウントにかかります。</p>
+        <label class="inline"><input type="checkbox" id="ai-enabled"> AI 返答を使う</label>
+        <label>API キー（Windows の資格情報マネージャーに保存し、画面には表示しません）
+          <input type="password" id="ai-key" autocomplete="off" placeholder="sk-..."></label>
+        <div class="buttons">
+          <button id="ai-key-save">キーを保存</button>
+          <button id="ai-key-delete">キーを削除</button>
+          <span id="ai-key-state" class="hint"></span>
+        </div>
+        <div class="grid">
+          <label>モデル <input id="ai-model"></label>
+          <label>話者 <select id="ai-speaker"></select></label>
+          <label>速さ <input type="number" id="ai-speed" min="0.5" max="2" step="0.1"></label>
+          <label>音量 <input type="number" id="ai-volume" min="0" max="2" step="0.1"></label>
+          <label>間隔（秒） <input type="number" id="ai-interval" min="5" max="600"></label>
+          <label>1時間あたりの上限 <input type="number" id="ai-hourly" min="1" max="600"></label>
+          <label>コメントの最大文字数 <input type="number" id="ai-max-chars" min="20" max="500"></label>
+        </div>
+        <label>トリガーの言葉（1行に1つ） <textarea id="ai-triggers" rows="3" placeholder="GPT&#10;教えて"></textarea></label>
+        <label>性格と口調 <textarea id="ai-persona" rows="3" placeholder="関西弁でフレンドリーに、短めに返事をする"></textarea></label>
+        <button id="ai-save" class="primary">保存</button>
+        <p id="ai-result" class="hint"></p>
+      </div>
+    </section>
+
+    <section data-panel="emoji" hidden>
+      <div class="card">
+        <h2>絵文字</h2>
+        <p class="hint">配信中に出た絵文字が並びます。読み方は読み上げに使い、効果音は絵文字を含むコメントで鳴らします（wav、mp3、ogg、m4a、10MB まで）。</p>
+        <ol id="emoji-list" class="list"></ol>
+        <p id="emoji-result" class="hint"></p>
       </div>
     </section>
 

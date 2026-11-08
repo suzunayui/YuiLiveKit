@@ -22,12 +22,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time",
 tokio-util = "0.7"
 tokio-native-tls = "0.3"
 native-tls = "0.2"
-reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "gzip"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "gzip", "query"] }
 rusqlite = { version = "0.41", features = ["bundled"] }
 regex = "1"
 url = "2"
 futures-util = "0.3"
 sha2 = "0.10"
+rodio = { version = "0.23", default-features = false, features = ["playback", "wav", "mp3", "vorbis", "symphonia-aac", "symphonia-isomp4"] }
+keyring = "4"
+tauri-plugin-dialog = "2"
 
 [profile.release]
 opt-level = "s"

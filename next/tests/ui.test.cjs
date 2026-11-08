@@ -42,6 +42,7 @@ const fakeTauri = ({ state }) => {
   let participants = state.participants;
   let layouts = state.layouts;
   let ohayo = state.ohayo;
+  let voice = state.voice;
   window.__TAURI__ = {
     core: {
       invoke: async (command, args = {}) => {
@@ -70,6 +71,28 @@ const fakeTauri = ({ state }) => {
           case 'delete_layout': { const { [args.name]: _, ...rest } = layouts; layouts = rest; return layouts; }
           case 'obs_plugin_status': return { state: 'missing', path: 'C:\\ProgramData\\obs-studio\\plugins\\yui-live-kit\\bin\\64bit\\yui-live-kit.dll', obs_running: false };
           case 'install_obs_plugin': return { state: 'installed', path: '', obs_running: false };
+          case 'get_voice_state': return voice;
+          case 'voicevox_speakers': return [{ id: 2, name: '四国めたん（ノーマル）' }, { id: 3, name: 'ずんだもん（ノーマル）' }];
+          case 'set_speech_settings': voice = { ...voice, speech: args.settings }; return args.settings;
+          case 'set_ai_settings': voice = { ...voice, ai: args.settings }; return args.settings;
+          case 'set_api_key': voice = { ...voice, has_api_key: Boolean(args.key) }; return voice.has_api_key;
+          case 'set_viewer_name': {
+            const names = { ...voice.viewers.names };
+            if (args.reading) names[args.viewer] = args.reading; else delete names[args.viewer];
+            voice = { ...voice, viewers: { ...voice.viewers, names } };
+            return voice.viewers;
+          }
+          case 'set_blocked': {
+            const blocked = voice.viewers.blocked.filter(v => v !== args.viewer).concat(args.blocked ? [args.viewer] : []);
+            voice = { ...voice, viewers: { ...voice.viewers, blocked } };
+            return voice.viewers;
+          }
+          case 'set_emoji':
+            voice = { ...voice, emoji: voice.emoji.map(e => (e.code === args.code ? { ...e, reading: args.reading ?? e.reading, sound: args.clearSound ? null : e.sound } : e)) };
+            return voice.emoji;
+          case 'choose_emoji_sound':
+            voice = { ...voice, emoji: voice.emoji.map(e => (e.code === args.code ? { ...e, sound: 'C:/sounds/a.wav' } : e)) };
+            return voice.emoji;
           default: return null;
         }
       },
@@ -105,6 +128,12 @@ function baseState(extra = {}) {
     tool_settings: { participant_keyword: '参加希望', ohayo_keywords: ['おはよ', 'おっは'] },
     layouts: { default: defaultLayout },
     legacy_imported: false, legacy_candidates: ['C:\\Users\\a\\AppData\\Roaming\\YuiLiveKit\\comments.db'],
+    voice: {
+      speech: { enabled: false, voice: { speaker: 3, speed: 1, volume: 1 }, read_name: true, replacements: [], ng_words: [], max_queue: 20 },
+      ai: { enabled: false, model: 'gpt-6-luna', persona: '', triggers: [], voice: { speaker: 2, speed: 1, volume: 1 }, interval_seconds: 20, hourly_limit: 30, max_comment_chars: 200 },
+      viewers: { names: {}, blocked: [] }, has_api_key: false,
+      emoji: [{ code: ':wave:', url: null, reading: null, sound: null, volume: 1 }],
+    },
     ...extra,
   };
 }
@@ -206,6 +235,67 @@ test('support, participants, layout editor and OBS tabs', async () => {
     await page.waitForFunction(() => document.getElementById('plugin-state').textContent === '未導入');
     await page.click('#plugin-install');
     await page.waitForFunction(() => document.getElementById('plugin-result').textContent.startsWith('導入しました'));
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test('reading aloud, AI replies, emoji and viewer settings', async () => {
+  const server = await serve();
+  const browser = await chromium.launch({ channel: 'msedge' });
+  try {
+    const { page, errors } = await open(browser, server, baseState());
+    await page.click('[data-tab="speech"]');
+    await page.waitForFunction(() => document.querySelectorAll('#speech-speaker option').length === 2);
+    assert.equal(await page.inputValue('#speech-speaker'), '3');
+    await page.check('#speech-enabled');
+    await page.selectOption('#speech-speaker', '2');
+    await page.fill('#speech-replacements', 'www=>わらわら\n草=>くさ\n壊れた行');
+    await page.fill('#speech-ng', 'ネタバレ\n暴言');
+    await page.click('#speech-save');
+    await page.waitForFunction(() => document.getElementById('speech-result').textContent === '保存しました');
+    const speech = (await page.evaluate(() => window.calls.find(c => c[0] === 'set_speech_settings')))[1].settings;
+    assert.equal(speech.enabled, true);
+    assert.equal(speech.voice.speaker, 2);
+    assert.deepEqual(speech.replacements, [{ from: 'www', to: 'わらわら' }, { from: '草', to: 'くさ' }]);
+    assert.deepEqual(speech.ng_words, ['ネタバレ', '暴言']);
+    await page.click('#speech-test');
+    assert.equal((await page.evaluate(() => window.calls.find(c => c[0] === 'speak_test')))[1].voice.speaker, 2);
+
+    await page.click('[data-tab="comments"]');
+    page.once('dialog', dialog => dialog.accept('ゆいちゃん'));
+    await page.click('#comments li .actions button:first-child');
+    await page.waitForFunction(() => window.calls.some(c => c[0] === 'set_viewer_name'));
+    await page.click('#comments li .actions button:last-child');
+    await page.waitForFunction(() => document.querySelector('#comments li .actions button:last-child').textContent === 'ブロック解除');
+    await page.click('[data-tab="speech"]');
+    assert.match(await page.textContent('#viewer-list'), /youtube:UC1: 読み方「ゆいちゃん」、ブロック中/);
+
+    await page.click('[data-tab="ai"]');
+    assert.equal(await page.textContent('#ai-key-state'), 'キーは未設定です');
+    await page.fill('#ai-key', 'sk-test');
+    await page.click('#ai-key-save');
+    await page.waitForFunction(() => document.getElementById('ai-key-state').textContent === 'キーは保存されています');
+    assert.equal(await page.inputValue('#ai-key'), '', 'the key does not stay on screen');
+    await page.check('#ai-enabled');
+    await page.fill('#ai-triggers', 'GPT\n教えて');
+    await page.fill('#ai-persona', '関西弁で');
+    await page.click('#ai-save');
+    await page.waitForFunction(() => document.getElementById('ai-result').textContent === '保存しました');
+    const ai = (await page.evaluate(() => window.calls.find(c => c[0] === 'set_ai_settings')))[1].settings;
+    assert.deepEqual([ai.enabled, ai.triggers, ai.persona], [true, ['GPT', '教えて'], '関西弁で']);
+    assert.ok(!JSON.stringify(ai).includes('sk-test'), 'the key is never part of the settings');
+
+    await page.click('[data-tab="emoji"]');
+    await page.fill('#emoji-list input', 'てをふる');
+    await page.dispatchEvent('#emoji-list input', 'change');
+    await page.waitForFunction(() => window.calls.some(c => c[0] === 'set_emoji' && c[1].reading === 'てをふる'));
+    await page.click('#emoji-list .actions button');
+    await page.waitForFunction(() => [...document.querySelectorAll('#emoji-list button')].some(b => b.textContent === '効果音を外す'));
+    await page.evaluate(() => window.fire('chat', { type: 'speech', message: 'VOICEVOXに接続できません' }));
+    assert.equal(await page.textContent('#speech-result'), 'VOICEVOXに接続できません');
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

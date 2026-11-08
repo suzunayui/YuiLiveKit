@@ -13,7 +13,8 @@ use yui_live_kit::{
     db::{Db, ImportSummary, Shown},
     layout::{Layout, Layouts},
     obs_plugin::{self, PluginStatus},
-    tools::{ClearMode, Ohayo, Participant, Support},
+    speech::{AiSettings, Speaker, SpeechSettings, Viewers, Voice},
+    tools::{ClearMode, Emoji, Ohayo, Participant, Support},
 };
 
 const DEFAULT_PORT: u16 = 5000;
@@ -166,6 +167,107 @@ async fn install_obs_plugin(app: tauri::AppHandle) -> Result<PluginStatus, Strin
     tauri::async_runtime::spawn_blocking(move || obs_plugin::install(OBS_PLUGIN, &scratch)).await.map_err(|e| e.to_string())?
 }
 
+#[derive(Serialize)]
+struct VoiceState {
+    speech: SpeechSettings,
+    ai: AiSettings,
+    viewers: Viewers,
+    has_api_key: bool,
+    emoji: Vec<Emoji>,
+}
+
+fn voice_state(core: &Core) -> VoiceState {
+    VoiceState {
+        speech: core.speech_settings(),
+        ai: core.ai_settings(),
+        viewers: core.viewers(),
+        has_api_key: core.has_api_key(),
+        emoji: core.db().emoji().unwrap_or_default(),
+    }
+}
+
+#[tauri::command]
+fn get_voice_state(core: CoreState<'_>) -> VoiceState {
+    voice_state(&core)
+}
+
+#[tauri::command]
+fn set_speech_settings(core: CoreState<'_>, settings: SpeechSettings) -> Result<SpeechSettings, String> {
+    core.set_speech_settings(settings)
+}
+
+#[tauri::command]
+fn set_ai_settings(core: CoreState<'_>, settings: AiSettings) -> Result<AiSettings, String> {
+    core.set_ai_settings(settings)
+}
+
+/// The key goes straight to Windows Credential Manager and is never sent back to the screen.
+#[tauri::command]
+fn set_api_key(core: CoreState<'_>, key: Option<String>) -> Result<bool, String> {
+    core.set_api_key(key.as_deref())
+}
+
+#[tauri::command]
+async fn voicevox_speakers(core: CoreState<'_>) -> Result<Vec<Speaker>, String> {
+    core.voicevox_speakers().await
+}
+
+#[tauri::command]
+fn speak_test(core: CoreState<'_>, text: String, voice: Voice) {
+    core.speak_test(&text, voice);
+}
+
+#[tauri::command]
+fn set_viewer_name(core: CoreState<'_>, viewer: String, reading: String) -> Result<Viewers, String> {
+    core.set_viewer_name(&viewer, &reading)
+}
+
+#[tauri::command]
+fn set_blocked(core: CoreState<'_>, viewer: String, blocked: bool) -> Result<Viewers, String> {
+    core.set_blocked(&viewer, blocked)
+}
+
+#[tauri::command]
+fn set_emoji(core: CoreState<'_>, code: String, reading: Option<String>, volume: Option<f64>, clear_sound: bool) -> Result<Vec<Emoji>, String> {
+    let db = core.db();
+    db.update_emoji(&code, reading.as_deref(), clear_sound.then_some(None), volume)?;
+    db.emoji()
+}
+
+const SOUND_EXTENSIONS: [&str; 4] = ["wav", "mp3", "ogg", "m4a"];
+const MAX_SOUND_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Copies a chosen sound into the app's folder, so moving or deleting the original does not break it.
+#[tauri::command]
+async fn choose_emoji_sound(app: tauri::AppHandle, core: CoreState<'_>, code: String) -> Result<Vec<Emoji>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picker = app.dialog().file().set_title("効果音を選ぶ").add_filter("音声", &SOUND_EXTENSIONS);
+    let Some(picked) = tauri::async_runtime::spawn_blocking(move || picker.blocking_pick_file()).await.map_err(|e| e.to_string())? else {
+        return core.db().emoji();
+    };
+    let source = picked.into_path().map_err(|e| e.to_string())?;
+    let extension = source.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    if !SOUND_EXTENSIONS.contains(&extension.as_str()) {
+        return Err("wav、mp3、ogg、m4a のファイルを選んでください".into());
+    }
+    if std::fs::metadata(&source).map_err(|e| e.to_string())?.len() > MAX_SOUND_BYTES {
+        return Err("効果音は10MBまでです".into());
+    }
+    let bytes = std::fs::read(&source).map_err(|e| e.to_string())?;
+    let name = {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(&bytes);
+        format!("{}.{extension}", digest.iter().take(8).map(|b| format!("{b:02x}")).collect::<String>())
+    };
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("sounds");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let target = dir.join(name);
+    std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;
+    let db = core.db();
+    db.update_emoji(&code, None, Some(Some(&target.display().to_string())), None)?;
+    db.emoji()
+}
+
 fn main() {
     let port = port();
     tauri::Builder::default()
@@ -176,6 +278,7 @@ fn main() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_dialog::init())
         .manage(ServerError(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             get_state,
@@ -193,6 +296,16 @@ fn main() {
             delete_layout,
             obs_plugin_status,
             install_obs_plugin,
+            get_voice_state,
+            set_speech_settings,
+            set_ai_settings,
+            set_api_key,
+            voicevox_speakers,
+            speak_test,
+            set_viewer_name,
+            set_blocked,
+            set_emoji,
+            choose_emoji_sound,
         ])
         .setup(move |app| {
             let data_dir = app.path().app_data_dir()?;
@@ -201,6 +314,7 @@ fn main() {
             }
             let core = Core::new(Db::open(&data_dir.join("livekit.db"))?);
             app.manage(core.clone());
+            tauri::async_runtime::spawn(core.clone().run_speech());
 
             let handle = app.handle().clone();
             let mut notices = core.subscribe();

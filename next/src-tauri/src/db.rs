@@ -76,6 +76,15 @@ CREATE TABLE IF NOT EXISTS support_read (
   read_ms INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS emoji (
+  code TEXT PRIMARY KEY,
+  url TEXT,
+  reading TEXT,
+  sound TEXT,
+  volume REAL NOT NULL DEFAULT 1.0,
+  first_seen_ms INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL

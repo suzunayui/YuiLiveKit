@@ -269,6 +269,79 @@ impl Db {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Emoji {
+    pub code: String,
+    pub url: Option<String>,
+    pub reading: Option<String>,
+    pub sound: Option<String>,
+    pub volume: f64,
+}
+
+impl Db {
+    /// Remembers emoji seen in chat, so the screen can offer readings and sounds for them.
+    pub fn record_emoji(&self, message: &crate::model::ChatMessage) -> Result<()> {
+        for part in &message.parts {
+            if let crate::model::Part::Emoji { url, alt } = part {
+                if !alt.is_empty() {
+                    self.conn()
+                        .execute(
+                            "INSERT OR IGNORE INTO emoji (code, url, first_seen_ms) VALUES (?1, ?2, ?3)",
+                            params![alt, url, message.created_ms],
+                        )
+                        .map_err(err)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn emoji(&self) -> Result<Vec<Emoji>> {
+        let mut statement = self
+            .conn()
+            .prepare("SELECT code, url, reading, sound, volume FROM emoji ORDER BY first_seen_ms DESC, code")
+            .map_err(err)?;
+        let rows = statement
+            .query_map([], |r| {
+                Ok(Emoji { code: r.get(0)?, url: r.get(1)?, reading: r.get(2)?, sound: r.get(3)?, volume: r.get(4)? })
+            })
+            .map_err(err)?;
+        rows.collect::<std::result::Result<_, _>>().map_err(err)
+    }
+
+    /// Changes one emoji's reading, sound or volume; `None` leaves that value as it is.
+    pub fn update_emoji(&self, code: &str, reading: Option<&str>, sound: Option<Option<&str>>, volume: Option<f64>) -> Result<()> {
+        let conn = self.conn();
+        conn.execute("INSERT OR IGNORE INTO emoji (code, first_seen_ms) VALUES (?1, ?2)", params![code, now_ms()])
+            .map_err(err)?;
+        if let Some(reading) = reading {
+            let reading: String = reading.trim().chars().take(30).collect();
+            conn.execute("UPDATE emoji SET reading = NULLIF(?2, '') WHERE code = ?1", params![code, reading]).map_err(err)?;
+        }
+        if let Some(sound) = sound {
+            conn.execute("UPDATE emoji SET sound = ?2 WHERE code = ?1", params![code, sound]).map_err(err)?;
+        }
+        if let Some(volume) = volume {
+            let volume = if volume.is_finite() { volume.clamp(0.0, 2.0) } else { 1.0 };
+            conn.execute("UPDATE emoji SET volume = ?2 WHERE code = ?1", params![code, volume]).map_err(err)?;
+        }
+        Ok(())
+    }
+
+    pub fn is_deleted(&self, stream_id: i64, platform_message_id: &str) -> Result<bool> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT deleted_ms IS NOT NULL FROM messages WHERE stream_id = ?1 AND platform_message_id = ?2",
+                params![stream_id, platform_message_id],
+                |r| r.get::<_, bool>(0),
+            )
+            .optional()
+            .map_err(err)?
+            .unwrap_or(false))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,6 +450,26 @@ mod tests {
         assert_eq!(db.ohayo(&[stream], &keywords).unwrap().count, 0, "the reset forgets earlier greetings");
         db.insert(stream, &message("6", "UC1", "おはよう", 16)).unwrap();
         assert_eq!(db.ohayo(&[stream], &keywords).unwrap().count, 1);
+    }
+
+    #[test]
+    fn emoji_are_remembered_with_readings_and_sounds() {
+        let (db, stream) = setup();
+        let mut m = message("e", "UC1", "hi", 5);
+        m.parts.push(Part::Emoji { url: "https://yt3.ggpht.com/e".into(), alt: ":wave:".into() });
+        db.insert(stream, &m).unwrap();
+        db.record_emoji(&m).unwrap();
+        db.record_emoji(&m).unwrap();
+        db.update_emoji(":wave:", Some(" ばいばい "), Some(Some("C:/s.wav")), Some(9.0)).unwrap();
+        let emoji = db.emoji().unwrap();
+        assert_eq!(emoji.len(), 1);
+        assert_eq!((emoji[0].reading.as_deref(), emoji[0].sound.as_deref(), emoji[0].volume), (Some("ばいばい"), Some("C:/s.wav"), 2.0));
+        db.update_emoji(":wave:", Some(""), Some(None), None).unwrap();
+        let emoji = db.emoji().unwrap();
+        assert_eq!((emoji[0].reading.as_deref(), emoji[0].sound.as_deref()), (None, None));
+        assert!(!db.is_deleted(stream, "e").unwrap());
+        db.apply_removal(stream, &Removal::Message("e".into()), 9).unwrap();
+        assert!(db.is_deleted(stream, "e").unwrap());
     }
 
     #[test]

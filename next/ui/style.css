@@ -54,3 +54,8 @@ code { background: var(--bg); padding: 2px 6px; border-radius: 4px; user-select:
 .box .handle { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; background: currentColor; cursor: nwse-resize; }
 #widget-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0 12px; margin-bottom: 8px; }
 #widget-form h3 { grid-column: 1 / -1; font-size: 14px; margin: 4px 0 8px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0 12px; margin: 8px 0; }
+#emoji-list li { grid-template-columns: 40px minmax(100px, 1fr) minmax(120px, 1fr) auto; align-items: center; }
+#emoji-list img { height: 32px; }
+#emoji-list .actions { grid-row: auto; grid-column: auto; flex-wrap: wrap; }
+#viewer-list li { grid-template-columns: 1fr auto; }

@@ -15,6 +15,8 @@ let support = [];
 let participants = [];
 let layouts = {};
 let overlayUrl = '';
+let viewers = { names: {}, blocked: [] };
+let speakers = [];
 
 function remember(key, value) {
   try { localStorage.setItem(key, value); } catch { /* storage may be unavailable */ }
@@ -95,7 +97,39 @@ function renderItem(message) {
   }
   if (message.amount_text) header.append(element('span', 'badge last', message.amount_text));
   item.append(header, messageText(message));
+  item.append(viewerActions(message));
   return item;
+}
+
+/** Same as speech::viewer_key in the app. */
+function viewerKey(message) {
+  return message.author_id ? `${message.platform}:${message.author_id}` : `${message.platform}:name:${message.author}`;
+}
+
+function viewerActions(message) {
+  const key = viewerKey(message);
+  const actions = element('span', 'actions');
+  actions.append(
+    button('読み方', async () => {
+      const reading = prompt(`${message.author} さんの名前の読み方（空にすると元に戻します）`, viewers.names[key] || '');
+      if (reading === null) return;
+      viewers = await invoke('set_viewer_name', { viewer: key, reading });
+      renderViewers();
+    }),
+    button(viewers.blocked.includes(key) ? 'ブロック解除' : 'ブロック', async () => {
+      viewers = await invoke('set_blocked', { viewer: key, blocked: !viewers.blocked.includes(key) });
+      renderViewers();
+      for (const node of document.querySelectorAll('#comments li')) refreshViewerButton(node);
+    }),
+  );
+  actions.dataset.viewer = key;
+  return actions;
+}
+
+function refreshViewerButton(item) {
+  const actions = item.querySelector('.actions[data-viewer]');
+  if (!actions) return;
+  actions.lastElementChild.textContent = viewers.blocked.includes(actions.dataset.viewer) ? 'ブロック解除' : 'ブロック';
 }
 
 function addMessage(message) {
@@ -423,6 +457,147 @@ $('legacy-import').addEventListener('click', async () => {
   }
 });
 
+// --- Reading aloud ---------------------------------------------------------------------
+
+function fillSpeakers(select, selectedId) {
+  select.replaceChildren(...speakers.map(s => { const o = element('option', '', s.name); o.value = s.id; return o; }));
+  if (!speakers.some(s => s.id === selectedId)) {
+    const o = element('option', '', `話者 ${selectedId}（VOICEVOX 未接続）`);
+    o.value = selectedId;
+    select.append(o);
+  }
+  select.value = String(selectedId);
+}
+
+async function loadSpeakers(settings, ai) {
+  try {
+    speakers = await invoke('voicevox_speakers');
+    $('speech-result').textContent = `VOICEVOX に接続しました（話者 ${speakers.length}）`;
+  } catch (error) {
+    speakers = [];
+    $('speech-result').textContent = String(error);
+  }
+  fillSpeakers($('speech-speaker'), settings.voice.speaker);
+  fillSpeakers($('ai-speaker'), ai.voice.speaker);
+}
+
+const voiceOf = prefix => ({
+  speaker: Number($(`${prefix}-speaker`).value),
+  speed: Number($(`${prefix}-speed`).value),
+  volume: Number($(`${prefix}-volume`).value),
+});
+
+function renderSpeech(settings) {
+  $('speech-enabled').checked = settings.enabled;
+  $('speech-speed').value = settings.voice.speed;
+  $('speech-volume').value = settings.voice.volume;
+  $('speech-max-queue').value = settings.max_queue;
+  $('speech-read-name').checked = settings.read_name;
+  $('speech-replacements').value = settings.replacements.map(r => `${r.from}=>${r.to}`).join('\n');
+  $('speech-ng').value = settings.ng_words.join('\n');
+}
+
+function readReplacements(text) {
+  return text.split(/\r?\n/).map(line => line.split(/=>|＝>/)).filter(p => p.length >= 2 && p[0].trim())
+    .map(([from, ...to]) => ({ from: from.trim(), to: to.join('=>').trim() }));
+}
+
+$('speech-save').addEventListener('click', () => attempt('speech-result', async () => {
+  renderSpeech(await invoke('set_speech_settings', { settings: {
+    enabled: $('speech-enabled').checked, voice: voiceOf('speech'), read_name: $('speech-read-name').checked,
+    replacements: readReplacements($('speech-replacements').value), ng_words: keywordLines($('speech-ng').value),
+    max_queue: Number($('speech-max-queue').value),
+  } }));
+}, '保存しました'));
+$('speech-test').addEventListener('click', () => invoke('speak_test', { text: $('speech-test-text').value, voice: voiceOf('speech') }));
+$('speech-reload-speakers').addEventListener('click', async () => {
+  const state = await invoke('get_voice_state');
+  await loadSpeakers(state.speech, state.ai);
+});
+
+function renderViewers() {
+  const list = $('viewer-list');
+  list.replaceChildren();
+  const keys = new Set([...Object.keys(viewers.names), ...viewers.blocked]);
+  for (const key of keys) {
+    const item = element('li');
+    const label = [viewers.names[key] ? `読み方「${viewers.names[key]}」` : '', viewers.blocked.includes(key) ? 'ブロック中' : '']
+      .filter(Boolean).join('、');
+    item.append(element('span', '', `${key}: ${label}`));
+    const actions = element('span', 'actions');
+    if (viewers.names[key]) actions.append(button('読み方を消す', async () => { viewers = await invoke('set_viewer_name', { viewer: key, reading: '' }); renderViewers(); }));
+    if (viewers.blocked.includes(key)) actions.append(button('ブロック解除', async () => { viewers = await invoke('set_blocked', { viewer: key, blocked: false }); renderViewers(); }));
+    item.append(actions);
+    list.append(item);
+  }
+}
+
+// --- AI replies ------------------------------------------------------------------------
+
+function renderAi(settings) {
+  $('ai-enabled').checked = settings.enabled;
+  $('ai-model').value = settings.model;
+  $('ai-speed').value = settings.voice.speed;
+  $('ai-volume').value = settings.voice.volume;
+  $('ai-interval').value = settings.interval_seconds;
+  $('ai-hourly').value = settings.hourly_limit;
+  $('ai-max-chars').value = settings.max_comment_chars;
+  $('ai-triggers').value = settings.triggers.join('\n');
+  $('ai-persona').value = settings.persona;
+}
+
+function renderKeyState(hasKey) {
+  $('ai-key-state').textContent = hasKey ? 'キーは保存されています' : 'キーは未設定です';
+}
+
+$('ai-save').addEventListener('click', () => attempt('ai-result', async () => {
+  renderAi(await invoke('set_ai_settings', { settings: {
+    enabled: $('ai-enabled').checked, model: $('ai-model').value, persona: $('ai-persona').value,
+    triggers: keywordLines($('ai-triggers').value), voice: voiceOf('ai'), interval_seconds: Number($('ai-interval').value),
+    hourly_limit: Number($('ai-hourly').value), max_comment_chars: Number($('ai-max-chars').value),
+  } }));
+}, '保存しました'));
+$('ai-key-save').addEventListener('click', async () => {
+  renderKeyState(await invoke('set_api_key', { key: $('ai-key').value }));
+  $('ai-key').value = '';
+});
+$('ai-key-delete').addEventListener('click', async () => renderKeyState(await invoke('set_api_key', { key: null })));
+
+// --- Emoji -----------------------------------------------------------------------------
+
+function renderEmoji(list) {
+  const box = $('emoji-list');
+  box.replaceChildren();
+  for (const emoji of list) {
+    const item = element('li');
+    if (emoji.url) {
+      const img = element('img');
+      img.src = emoji.url;
+      img.alt = emoji.code;
+      item.append(img);
+    } else item.append(element('span'));
+    item.append(element('span', 'name', emoji.code));
+    const reading = element('input');
+    reading.value = emoji.reading || '';
+    reading.placeholder = '読み方';
+    reading.addEventListener('change', async () => renderEmoji(await invoke('set_emoji', { code: emoji.code, reading: reading.value, volume: null, clearSound: false })));
+    item.append(reading);
+    const actions = element('span', 'actions');
+    actions.append(button(emoji.sound ? '効果音を変える' : '効果音を選ぶ', () => attempt('emoji-result', async () =>
+      renderEmoji(await invoke('choose_emoji_sound', { code: emoji.code })))));
+    if (emoji.sound) {
+      const volume = element('input');
+      volume.type = 'number'; volume.min = 0; volume.max = 2; volume.step = 0.1; volume.value = emoji.volume;
+      volume.title = '音量';
+      volume.addEventListener('change', async () => renderEmoji(await invoke('set_emoji', { code: emoji.code, reading: null, volume: Number(volume.value), clearSound: false })));
+      actions.append(volume, button('効果音を外す', async () => renderEmoji(await invoke('set_emoji', { code: emoji.code, reading: null, volume: null, clearSound: true }))));
+    }
+    item.append(actions);
+    box.append(item);
+  }
+  if (!list.length) box.append(element('li', '', 'まだ絵文字は出ていません。'));
+}
+
 // --- Events and start ------------------------------------------------------------------
 
 await listen('chat', ({ payload }) => {
@@ -437,6 +612,7 @@ await listen('chat', ({ payload }) => {
   } else if (payload.type === 'participants') renderParticipants(payload.items);
   else if (payload.type === 'ohayo') renderOhayo(payload);
   else if (payload.type === 'layout') layouts[payload.name] = payload.layout;
+  else if (payload.type === 'speech') $('speech-result').textContent = payload.message;
 });
 await listen('server-error', ({ payload }) => showError('server-error', payload));
 
@@ -458,4 +634,13 @@ if (!state.legacy_imported && state.legacy_candidates.length) {
   for (const path of state.legacy_candidates) $('legacy-path').append(element('option', '', path));
   $('legacy').hidden = false;
 }
+const voice = await invoke('get_voice_state');
+viewers = voice.viewers;
+renderSpeech(voice.speech);
+renderAi(voice.ai);
+renderKeyState(voice.has_api_key);
+renderViewers();
+renderEmoji(voice.emoji);
+for (const node of document.querySelectorAll('#comments li')) refreshViewerButton(node);
+loadSpeakers(voice.speech, voice.ai);
 selectTab(recall('tab') || 'home');
