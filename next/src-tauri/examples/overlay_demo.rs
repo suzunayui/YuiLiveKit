@@ -73,11 +73,10 @@ async fn main() {
                 ja: text(&command, "ja").unwrap_or_default(),
             }),
             Some("clear_translations") => core.notify_media(yui_live_kit::core::Notice::TranslationsCleared),
-            Some("save_layout") => {
-                let name = text(&command, "name").unwrap_or_default();
-                let layout = serde_json::from_value(command["layout"].clone()).unwrap_or_default();
-                if let Err(error) = core.save_layout(&name, layout) {
-                    eprintln!("save_layout: {error}");
+            Some("save_appearance") => {
+                let appearance = serde_json::from_value(command["appearance"].clone()).unwrap_or_default();
+                if let Err(error) = core.save_appearance(appearance) {
+                    eprintln!("save_appearance: {error}");
                 }
             }
             Some(op @ ("remove" | "remove_author")) => {

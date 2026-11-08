@@ -4,11 +4,10 @@
 <meta charset="utf-8">
 <title>YuiLiveKit Overlay</title>
 <style>
-  html, body { margin: 0; width: 100vw; height: 100vh; background: transparent; overflow: hidden; }
-  /* Laid out at 1920×1080 and scaled to whatever size OBS gives the source. */
-  #stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; overflow: hidden;
+  /* Each OBS source shows one part, which fills the source. */
+  html, body { margin: 0; width: 100vw; height: 100vh; background: transparent; overflow: hidden;
     font-family: "Noto Sans JP", "Yu Gothic UI", "Meiryo", sans-serif; }
-  .widget { position: absolute; overflow: hidden; }
+  .widget { position: absolute; inset: 0; overflow: hidden; }
   .widget[hidden] { display: none; }
 
   #comments { display: flex; flex-direction: column; justify-content: flex-end; gap: 8px; }
@@ -51,30 +50,23 @@
 </style>
 </head>
 <body>
-<div id="stage">
-  <div id="niconico" class="widget" hidden></div>
-  <div id="participants" class="widget" hidden><h2 id="participants-title"></h2><ol id="participants-list"></ol></div>
-  <div id="ohayo" class="widget" hidden><span id="ohayo-label"></span><span id="ohayo-count">0</span></div>
-  <div id="comments" class="widget"></div>
-  <div id="subtitles" class="widget"><div class="box" id="sub-box" hidden><p id="sub-ja"></p><p id="sub-en"></p></div></div>
-</div>
+<div id="niconico" class="widget" hidden></div>
+<div id="participants" class="widget" hidden><h2 id="participants-title"></h2><ol id="participants-list"></ol></div>
+<div id="ohayo" class="widget" hidden><span id="ohayo-label"></span><span id="ohayo-count">0</span></div>
+<div id="comments" class="widget" hidden></div>
+<div id="subtitles" class="widget" hidden><div class="box" id="sub-box" hidden><p id="sub-ja"></p><p id="sub-en"></p></div></div>
 <script>
 'use strict';
 // Everything from chat is set with textContent, or as an image URL the app already checked.
 const $ = id => document.getElementById(id);
-const stage = $('stage');
-const layoutName = new URLSearchParams(location.search).get('layout') || 'default';
+// The page serves every part; the path says which one this source shows.
+const PART = location.pathname.split('/').filter(Boolean).pop();
 const shown = new Map();
 const bullets = new Map();
 const translations = new Map();
-let layout = null;
+let look = null;
 let subtitleTimer = null;
-
-function fit() {
-  stage.style.transform = `scale(${Math.min(innerWidth / 1920, innerHeight / 1080)})`;
-}
-addEventListener('resize', fit);
-fit();
+if ($(PART)) $(PART).hidden = false;
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -98,14 +90,9 @@ function appendParts(target, message) {
   if (!(message.parts || []).length) target.append(document.createTextNode(message.text || ''));
 }
 
-function place(node, area) {
-  node.hidden = !area.visible;
-  Object.assign(node.style, { left: `${area.x}px`, top: `${area.y}px`, width: `${area.width}px`, height: `${area.height}px` });
-}
-
-function applyLayout(next) {
-  layout = next;
-  const vars = stage.style;
+function applyAppearance(next) {
+  look = next;
+  const vars = document.body.style;
   vars.setProperty('--comment-bg', next.comments.background);
   vars.setProperty('--comment-text', next.comments.text_color);
   vars.setProperty('--comment-author', next.comments.author_color);
@@ -114,20 +101,15 @@ function applyLayout(next) {
   vars.setProperty('--nico-color', next.niconico.color);
   vars.setProperty('--participants-size', `${next.participants.font_size}px`);
   vars.setProperty('--ohayo-size', `${next.ohayo.font_size}px`);
-  place($('comments'), next.comments);
-  $('comments').classList.toggle('no-icons', !next.comments.show_icons);
-  place($('niconico'), next.niconico);
-  place($('participants'), next.participants);
-  $('participants').classList.toggle('horizontal', next.participants.horizontal);
-  $('participants-title').textContent = next.participants.title;
-  place($('ohayo'), next.ohayo);
-  $('ohayo-label').textContent = next.ohayo.label;
-  place($('subtitles'), next.subtitles);
   vars.setProperty('--sub-size', `${next.subtitles.font_size}px`);
   vars.setProperty('--sub-en-size', `${next.subtitles.english_size}px`);
   vars.setProperty('--sub-color', next.subtitles.text_color);
   vars.setProperty('--sub-en-color', next.subtitles.english_color);
   vars.setProperty('--sub-align', next.subtitles.alignment);
+  $('comments').classList.toggle('no-icons', !next.comments.show_icons);
+  $('participants').classList.toggle('horizontal', next.participants.horizontal);
+  $('participants-title').textContent = next.participants.title;
+  $('ohayo-label').textContent = next.ohayo.label;
   trimComments();
 }
 
@@ -177,10 +159,10 @@ function clearTranslations() {
   for (const line of document.querySelectorAll('#comments .translation')) { line.textContent = ''; line.hidden = true; }
 }
 
-/** Shows a subtitle for the layout's duration; `ageMs` shortens it after a reconnect. */
+/** Shows a subtitle for the set duration; `ageMs` shortens it after a reconnect. */
 function showSubtitle(ja, en, ageMs = 0) {
   clearTimeout(subtitleTimer);
-  const remaining = (layout ? layout.subtitles.duration : 10) * 1000 - ageMs;
+  const remaining = (look ? look.subtitles.duration : 10) * 1000 - ageMs;
   const visible = Boolean(ja || en) && remaining > 0;
   $('sub-ja').textContent = visible ? ja : '';
   $('sub-en').textContent = visible ? en : '';
@@ -190,7 +172,7 @@ function showSubtitle(ja, en, ageMs = 0) {
 
 function trimComments() {
   const list = $('comments');
-  const max = layout ? layout.comments.max : 12;
+  const max = look ? look.comments.max : 12;
   while (list.children.length > max) {
     shown.delete(list.firstElementChild.dataset.key);
     list.firstElementChild.remove();
@@ -214,7 +196,7 @@ function emojiOnly(message) {
 }
 
 function fly(content, key, { color, onDone } = {}) {
-  const area = layout.niconico;
+  const area = { width: innerWidth, height: innerHeight, duration: look.niconico.duration };
   const node = element('div', 'bullet');
   if (color) node.style.color = color;
   node.append(content);
@@ -237,7 +219,7 @@ function fly(content, key, { color, onDone } = {}) {
 }
 
 function drop(content, key) {
-  const area = layout.niconico;
+  const area = { width: innerWidth, height: innerHeight };
   const node = element('div', 'bullet');
   node.append(content);
   $('niconico').append(node);
@@ -258,7 +240,7 @@ function drop(content, key) {
 }
 
 function addBullet(message) {
-  if (!layout || !layout.niconico.visible) return;
+  if (!look || PART !== 'niconico') return;
   const content = element('span');
   appendParts(content, message);
   if (emojiOnly(message)) { drop(content, message.key); return; }
@@ -308,24 +290,24 @@ function clear() {
 
 let delay = 500;
 function connect() {
-  const socket = new WebSocket(`ws://${location.host}/overlay/ws?layout=${encodeURIComponent(layoutName)}`);
+  const socket = new WebSocket(`ws://${location.host}/overlay/ws`);
   socket.onopen = () => { delay = 500; };
   socket.onmessage = event => {
     const data = JSON.parse(event.data);
     if (data.type === 'snapshot') {
       clear();
-      applyLayout(data.layout);
+      applyAppearance(data.appearance);
       for (const [key, ja] of Object.entries(data.translations || {})) translations.set(key, ja);
-      data.messages.forEach(addComment);
+      if (PART === 'comments') data.messages.forEach(addComment);
       if (data.subtitle) showSubtitle(data.subtitle.ja, data.subtitle.en, data.subtitle.age_ms);
       renderParticipants(data.participants);
       renderOhayo(data.ohayo);
-    } else if (data.type === 'message') { addComment(data); addBullet(data); }
+    } else if (data.type === 'message') { if (PART === 'comments') addComment(data); addBullet(data); }
     else if (data.type === 'deleted') remove(data.keys);
     else if (data.type === 'reset') clear();
     else if (data.type === 'participants') renderParticipants(data.items);
     else if (data.type === 'ohayo') renderOhayo(data);
-    else if (data.type === 'layout') applyLayout(data.layout);
+    else if (data.type === 'appearance') applyAppearance(data);
     else if (data.type === 'subtitle') showSubtitle(data.ja, data.en);
     else if (data.type === 'translation') showTranslation(data.key, data.ja);
     else if (data.type === 'translations_cleared') clearTranslations();

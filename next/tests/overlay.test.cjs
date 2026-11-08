@@ -1,4 +1,4 @@
-// Opens /overlay in Microsoft Edge (the same Chromium family as OBS's browser source) against
+// Opens the comments part (/overlay/comments) in Microsoft Edge (the same Chromium family as OBS's browser source) against
 // the overlay_demo example, which takes scripted chat on stdin. Run: node --test tests/
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -8,7 +8,7 @@ const { chromium } = require('playwright');
 
 const exe = path.join(__dirname, '../src-tauri/target/debug/examples/overlay_demo.exe');
 const PORT = 15030;
-const URL = `http://127.0.0.1:${PORT}/overlay`;
+const URL = `http://127.0.0.1:${PORT}/overlay/comments`;
 
 function startDemo() {
   const child = spawn(exe, [String(PORT)], { stdio: ['pipe', 'pipe', 'inherit'] });

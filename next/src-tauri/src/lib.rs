@@ -2,7 +2,7 @@
 
 pub mod core;
 pub mod db;
-pub mod layout;
+pub mod appearance;
 pub mod model;
 pub mod obs_plugin;
 pub mod runtime;

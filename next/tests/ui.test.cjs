@@ -18,14 +18,18 @@ function serve() {
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server)));
 }
 
-const area = (x, extra = {}) => ({ visible: true, x, y: 100, width: 400, height: 300, font_size: 24, ...extra });
-const defaultLayout = {
-  comments: { ...area(24), max: 12, background: '#000000c7', text_color: '#ffffff', author_color: '#ffd8f8', show_icons: true },
-  niconico: { ...area(0, { visible: false }), duration: 8, color: '#ffffff' },
-  participants: { ...area(1380, { visible: false }), horizontal: false, title: '参加待ち' },
-  ohayo: { ...area(1500, { visible: false }), label: 'おはよう' },
-  subtitles: { ...area(160), english_size: 32, duration: 10, alignment: 'center', text_color: '#ffffff', english_color: '#ffffff' },
+const defaultAppearance = {
+  comments: { font_size: 24, max: 12, background: '#000000c7', text_color: '#ffffff', author_color: '#ffd8f8', show_icons: true },
+  niconico: { font_size: 56, duration: 8, color: '#ffffff' },
+  participants: { font_size: 24, horizontal: false, title: '参加待ち' },
+  ohayo: { font_size: 40, label: 'おはよう' },
+  subtitles: { font_size: 46, english_size: 32, duration: 10, alignment: 'center', text_color: '#ffffff', english_color: '#ffffff' },
 };
+const part = (id, label, width, height) => ({ id, label, source: `YuiLiveKit - ${label}`, url: `http://127.0.0.1:5000/overlay/${id}`, width, height });
+const defaultParts = [
+  part('participants', '参加管理', 500, 600), part('ohayo', 'おはよう', 380, 120), part('comments', '通常コメント', 720, 636),
+  part('subtitles', '字幕', 1600, 250), part('niconico', 'ニコニコ風', 1920, 880),
+];
 
 const message = (key, extra = {}) => ({
   type: 'message', key, row_id: Number(key.replace(/\D/g, '')) || 1, stream_id: 1, platform: 'youtube', id: key, author_id: 'UC1',
@@ -41,7 +45,6 @@ const fakeTauri = ({ state }) => {
   window.fire = (name, payload) => (listeners[name] || []).forEach(fn => fn({ payload }));
   let support = state.support;
   let participants = state.participants;
-  let layouts = state.layouts;
   let ohayo = state.ohayo;
   let voice = state.voice;
   window.__TAURI__ = {
@@ -65,11 +68,12 @@ const fakeTauri = ({ state }) => {
           case 'adjust_ohayo': ohayo = { ...ohayo, adjustment: ohayo.adjustment + args.delta, count: Math.max(0, ohayo.count + args.delta) }; return ohayo;
           case 'reset_ohayo': ohayo = { detected: 0, adjustment: 0, count: 0 }; return ohayo;
           case 'set_tool_settings': return { participant_keyword: args.participantKeyword, ohayo_keywords: args.ohayoKeywords };
-          case 'save_layout':
-            if (!/^[A-Za-z0-9_-]{1,32}$/.test(args.name)) throw '配置の名前は半角英数字、-、_ の32文字までにしてください';
-            layouts = { ...layouts, [args.name]: args.layout };
-            return layouts;
-          case 'delete_layout': { const { [args.name]: _, ...rest } = layouts; layouts = rest; return layouts; }
+          case 'save_appearance': {
+            // Like the app: values are kept in range.
+            const saved = structuredClone(args.appearance);
+            saved.comments.font_size = Math.min(Math.max(saved.comments.font_size, 10), 200);
+            return saved;
+          }
           case 'obs_plugin_status': return { state: 'missing', path: 'C:\\ProgramData\\obs-studio\\plugins\\yui-live-kit\\bin\\64bit\\yui-live-kit.dll', obs_running: false };
           case 'install_obs_plugin': return { state: 'installed', path: '', obs_running: false };
           case 'get_voice_state': return voice;
@@ -119,7 +123,7 @@ async function open(browser, server, state) {
 
 function baseState(extra = {}) {
   return {
-    overlay_url: 'http://127.0.0.1:5000/overlay', server_error: null, statuses: {},
+    parts: defaultParts, server_error: null, statuses: {},
     messages: [message('youtube:1', { text: 'earlier', parts: [{ type: 'text', text: 'earlier' }] })],
     participants: [
       { id: 1, status: 'waiting', author: 'First', icon: null, text: '参加希望', platform: 'youtube', created_ms: 1 },
@@ -132,7 +136,7 @@ function baseState(extra = {}) {
       { ...message('youtube:12', { kind: 'membership', author: 'Member', text: 'joined' }), read: true },
     ],
     tool_settings: { participant_keyword: '参加希望', ohayo_keywords: ['おはよ', 'おっは'] },
-    layouts: { default: defaultLayout },
+    appearance: defaultAppearance,
     legacy_imported: false, legacy_candidates: ['C:\\Users\\a\\AppData\\Roaming\\YuiLiveKit\\comments.db'],
     voice: {
       speech: { enabled: false, voice: { speaker: 3, speed: 1, volume: 1 }, read_name: true, replacements: [], ng_words: [], max_queue: 20 },
@@ -196,7 +200,7 @@ test('home and comments: collection, status, safe chat text and history', async 
   }
 });
 
-test('support, participants, layout editor and OBS tabs', async () => {
+test('support, participants, appearance and OBS tabs', async () => {
   const server = await serve();
   const browser = await chromium.launch({ channel: 'msedge' });
   try {
@@ -220,35 +224,31 @@ test('support, participants, layout editor and OBS tabs', async () => {
     await page.evaluate(() => window.fire('chat', { type: 'participants', items: [] }));
     assert.equal(await page.$$eval('#participants li', n => n.length), 0, 'the list follows the app');
 
-    await page.click('[data-tab="layout"]');
-    assert.equal(await page.$$eval('#preview .box', b => b.length), 5);
-    const box = await page.$('#preview .box.selected');
-    const before = await box.boundingBox();
-    await page.mouse.move(before.x + 20, before.y + 20);
-    await page.mouse.down();
-    await page.mouse.move(before.x + 120, before.y + 70, { steps: 4 });
-    await page.mouse.up();
-    const x = Number(await page.inputValue('#widget-form input[data-field="x"]'));
-    assert.ok(x > 24, `dragging moves the box (x=${x})`);
-    await page.fill('#widget-form input[data-field="font_size"]', '40');
-    await page.dispatchEvent('#widget-form input[data-field="font_size"]', 'change');
-    await page.click('#layout-save');
-    await page.waitForFunction(() => document.getElementById('layout-result').textContent.startsWith('保存しました'));
-    const saved = (await page.evaluate(() => window.calls.filter(c => c[0] === 'save_layout').pop()))[1];
-    assert.equal(saved.name, 'default');
-    assert.equal(saved.layout.comments.font_size, 40);
-    assert.equal(saved.layout.comments.x, x);
-    await page.fill('#layout-new-name', 'bad name');
-    await page.click('#layout-add');
-    await page.waitForFunction(() => document.getElementById('layout-result').textContent.includes('半角英数字'));
-    await page.fill('#layout-new-name', 'game');
-    await page.click('#layout-add');
-    await page.waitForFunction(() => document.getElementById('layout-url').textContent.endsWith('?layout=game'));
+    await page.click('[data-tab="look"]');
+    assert.deepEqual(await page.$$eval('.look-part legend', l => l.map(x => x.textContent)), ['参加管理', 'おはよう', '通常コメント', '字幕', 'ニコニコ風']);
+    const size = '.look-part[data-part="comments"] input[data-field="font_size"]';
+    await page.fill(size, '999');
+    await page.dispatchEvent(size, 'change');
+    await page.uncheck('.look-part[data-part="comments"] input[data-field="show_icons"]');
+    await page.fill('.look-part[data-part="ohayo"] input[data-field="label"]', 'Good morning');
+    await page.dispatchEvent('.look-part[data-part="ohayo"] input[data-field="label"]', 'change');
+    await page.click('#look-save');
+    await page.waitForFunction(() => document.getElementById('look-result').textContent.startsWith('保存しました'));
+    const saved = (await page.evaluate(() => window.calls.filter(c => c[0] === 'save_appearance').pop()))[1].appearance;
+    assert.equal(saved.comments.font_size, 999);
+    assert.equal(saved.comments.show_icons, false);
+    assert.equal(saved.ohayo.label, 'Good morning');
+    assert.equal(await page.inputValue(size), '200', 'the form shows what the app kept');
+    await page.evaluate(a => window.fire('chat', { type: 'appearance', ...a, niconico: { ...a.niconico, color: '#ff0000' } }), defaultAppearance);
+    assert.equal(await page.inputValue('.look-part[data-part="niconico"] input[data-field="color"]'), '#ff0000', 'the form follows changes');
 
     await page.click('[data-tab="obs"]');
     await page.waitForFunction(() => document.getElementById('plugin-state').textContent === '未導入');
     await page.click('#plugin-install');
     await page.waitForFunction(() => document.getElementById('plugin-result').textContent.startsWith('導入しました'));
+    assert.deepEqual(await page.$$eval('#part-urls tbody tr', rows => rows.map(r => r.children[1].textContent)),
+      defaultParts.map(p => p.url), 'each part has its own URL');
+    assert.equal(await page.textContent('#part-urls tbody tr:nth-child(3) td:nth-child(3)'), '720×636');
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

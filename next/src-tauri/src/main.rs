@@ -11,7 +11,7 @@ use tauri::{Emitter, Manager};
 use yui_live_kit::{
     core::{Core, Media, Notice, Status, ToolSettings},
     db::{Db, ImportSummary, Shown},
-    layout::{Layout, Layouts},
+    appearance::{self, Appearance},
     obs_plugin::{self, PluginStatus},
     runtime::{Feature, Paths, Runtime, RuntimeState},
     subtitles::{Launch, SubtitleSettings, SubtitleState, Subtitles},
@@ -32,15 +32,38 @@ fn port() -> u16 {
     std::env::var("YUI_LIVE_KIT_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_PORT)
 }
 
-fn overlay_url(port: u16) -> String {
-    format!("http://127.0.0.1:{port}/overlay")
+fn part_url(port: u16, id: &str) -> String {
+    format!("http://127.0.0.1:{port}/overlay/{id}")
 }
 
-/// The OBS plugin reads this file to learn where the overlay is.
+#[derive(Serialize)]
+struct PartSource {
+    id: &'static str,
+    label: &'static str,
+    source: &'static str,
+    url: String,
+    width: u32,
+    height: u32,
+}
+
+fn part_sources(port: u16) -> Vec<PartSource> {
+    appearance::PARTS
+        .iter()
+        .map(|p| PartSource { id: p.id, label: p.label, source: p.source, url: part_url(port, p.id), width: p.width, height: p.height })
+        .collect()
+}
+
+/// The OBS plugin reads this file to learn which sources to add, back to front.
 fn write_obs_source_file(dir: &Path, port: u16) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let source = serde_json::json!({"url": overlay_url(port), "width": CANVAS.0, "height": CANVAS.1});
-    std::fs::write(dir.join("obs-source.json"), serde_json::to_vec_pretty(&source)?)
+    let sources: Vec<serde_json::Value> = appearance::PARTS
+        .iter()
+        .map(|p| {
+            serde_json::json!({"name": p.source, "url": part_url(port, p.id), "width": p.width, "height": p.height, "x": p.x, "y": p.y})
+        })
+        .collect();
+    let file = serde_json::json!({"group": appearance::GROUP, "canvas_width": CANVAS.0, "canvas_height": CANVAS.1, "sources": sources});
+    std::fs::write(dir.join("obs-source.json"), serde_json::to_vec_pretty(&file)?)
 }
 
 /// comments.db files of the Electron version, newest data first.
@@ -59,7 +82,7 @@ struct ServerError(Mutex<Option<String>>);
 
 #[derive(Serialize)]
 struct AppState {
-    overlay_url: String,
+    parts: Vec<PartSource>,
     server_error: Option<String>,
     statuses: std::collections::BTreeMap<&'static str, Status>,
     messages: Vec<Shown>,
@@ -67,7 +90,7 @@ struct AppState {
     ohayo: Ohayo,
     support: Vec<Support>,
     tool_settings: ToolSettings,
-    layouts: Layouts,
+    appearance: Appearance,
     legacy_imported: bool,
     legacy_candidates: Vec<String>,
 }
@@ -75,7 +98,7 @@ struct AppState {
 #[tauri::command]
 fn get_state(core: CoreState<'_>, error: tauri::State<'_, ServerError>) -> AppState {
     AppState {
-        overlay_url: overlay_url(port()),
+        parts: part_sources(port()),
         server_error: error.0.lock().unwrap().clone(),
         statuses: core.statuses(),
         messages: core.snapshot(LIST_SIZE),
@@ -83,7 +106,7 @@ fn get_state(core: CoreState<'_>, error: tauri::State<'_, ServerError>) -> AppSt
         ohayo: core.ohayo(),
         support: core.support(),
         tool_settings: core.tool_settings(),
-        layouts: core.layouts(),
+        appearance: core.appearance(),
         legacy_imported: core.db().legacy_imported().unwrap_or(false),
         legacy_candidates: legacy_candidates(),
     }
@@ -146,13 +169,8 @@ fn set_support_read(core: CoreState<'_>, ids: Vec<i64>, read: bool) -> Result<Ve
 }
 
 #[tauri::command]
-fn save_layout(core: CoreState<'_>, name: String, layout: Layout) -> Result<Layouts, String> {
-    core.save_layout(&name, layout)
-}
-
-#[tauri::command]
-fn delete_layout(core: CoreState<'_>, name: String) -> Result<Layouts, String> {
-    core.delete_layout(&name)
+fn save_appearance(core: CoreState<'_>, appearance: Appearance) -> Result<Appearance, String> {
+    core.save_appearance(appearance)
 }
 
 #[tauri::command]
@@ -439,8 +457,7 @@ fn main() {
             reset_ohayo,
             set_tool_settings,
             set_support_read,
-            save_layout,
-            delete_layout,
+            save_appearance,
             obs_plugin_status,
             install_obs_plugin,
             get_voice_state,
@@ -463,6 +480,9 @@ fn main() {
             choose_emoji_sound,
         ])
         .setup(move |app| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_title(&format!("YuiLiveKit {}", app.package_info().version));
+            }
             let data_dir = app.path().app_data_dir()?;
             if let Err(error) = write_obs_source_file(&data_dir, port) {
                 eprintln!("could not write obs-source.json: {error}");

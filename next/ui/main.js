@@ -3,7 +3,6 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const MAX_ITEMS = 300;
-const CANVAS = { width: 1920, height: 1080 };
 const STATUS_LABELS = { starting: '接続中…', running: '取得中', reconnecting: '再接続中…', stopped: '停止中' };
 const PLATFORM_LABELS = { youtube: 'YouTube', twitch: 'Twitch' };
 const SUPPORT_KINDS = ['paid', 'sticker', 'membership', 'gift_purchase', 'gift_redeem', 'bits'];
@@ -13,8 +12,8 @@ const items = new Map();
 const statuses = {};
 let support = [];
 let participants = [];
-let layouts = {};
-let overlayUrl = '';
+let appearance = null;
+let parts = [];
 let viewers = { names: {}, blocked: [] };
 const translationsByKey = new Map();
 let media = null;
@@ -80,7 +79,6 @@ function selectTab(name) {
   for (const tab of document.querySelectorAll('#tabs button')) tab.setAttribute('aria-selected', String(tab.dataset.tab === name));
   for (const panel of document.querySelectorAll('[data-panel]')) panel.hidden = panel.dataset.panel !== name;
   remember('tab', name);
-  if (name === 'layout') renderPreview();
   if (name === 'obs') refreshPlugin();
 }
 for (const tab of document.querySelectorAll('#tabs button')) tab.addEventListener('click', () => selectTab(tab.dataset.tab));
@@ -310,131 +308,50 @@ $('participants-clear-all').addEventListener('click', async () => {
   if (confirm('参加管理の一覧を全て消しますか？')) renderParticipants(await invoke('clear_participants', { mode: 'all' }));
 });
 
-// --- Layout editor ---------------------------------------------------------------------
+// --- Appearance ------------------------------------------------------------------------
 
-const WIDGETS = {
-  comments: { label: '通常コメント', extra: [['max', '表示する件数', 'number'], ['background', '背景色（#RRGGBBAA）', 'text'],
-    ['text_color', '文字の色', 'text'], ['author_color', '名前の色', 'text'], ['show_icons', 'アイコンを表示', 'checkbox']] },
-  niconico: { label: 'ニコニコ風', extra: [['duration', '流れる秒数', 'number'], ['color', '文字の色', 'text']] },
-  participants: { label: '参加管理', extra: [['horizontal', '横に並べる', 'checkbox'], ['title', '見出し', 'text']] },
-  ohayo: { label: 'おはよう', extra: [['label', '表示する言葉', 'text']] },
-  subtitles: { label: '字幕', extra: [['english_size', '英語の文字の大きさ', 'number'], ['duration', '表示する秒数', 'number'],
-    ['alignment', '寄せ（left / center / right）', 'text'], ['text_color', '日本語の色', 'text'], ['english_color', '英語の色', 'text']] },
+const LOOK_FIELDS = {
+  comments: [['font_size', '文字の大きさ', 'number'], ['max', '表示する件数', 'number'], ['background', '背景色（#RRGGBBAA）', 'text'],
+    ['text_color', '文字の色', 'text'], ['author_color', '名前の色', 'text'], ['show_icons', 'アイコンを表示', 'checkbox']],
+  niconico: [['font_size', '文字の大きさ', 'number'], ['duration', '流れる秒数', 'number'], ['color', '文字の色', 'text']],
+  participants: [['font_size', '文字の大きさ', 'number'], ['horizontal', '横に並べる', 'checkbox'], ['title', '見出し', 'text']],
+  ohayo: [['font_size', '文字の大きさ', 'number'], ['label', '表示する言葉', 'text']],
+  subtitles: [['font_size', '日本語の文字の大きさ', 'number'], ['english_size', '英語の文字の大きさ', 'number'], ['duration', '表示する秒数', 'number'],
+    ['alignment', '寄せ（left / center / right）', 'text'], ['text_color', '日本語の色', 'text'], ['english_color', '英語の色', 'text']],
 };
-const AREA_FIELDS = [['visible', '表示する', 'checkbox'], ['x', 'X', 'number'], ['y', 'Y', 'number'],
-  ['width', '幅', 'number'], ['height', '高さ', 'number'], ['font_size', '文字の大きさ', 'number']];
-let editing = null;
-let selected = 'comments';
 
-function currentName() {
-  return $('layout-name').value || 'default';
-}
-
-function renderLayoutNames(preferred) {
-  const select = $('layout-name');
-  const keep = preferred || select.value || recall('layout') || 'default';
-  select.replaceChildren(...Object.keys(layouts).map(name => element('option', '', name)));
-  select.value = layouts[keep] ? keep : 'default';
-  loadLayout();
-}
-
-function loadLayout() {
-  editing = structuredClone(layouts[currentName()]);
-  remember('layout', currentName());
-  const name = currentName();
-  $('layout-url').textContent = name === 'default' ? overlayUrl : `${overlayUrl}?layout=${name}`;
-  $('layout-delete').disabled = name === 'default';
-  renderPreview();
-}
-
-function clampArea(area) {
-  area.width = Math.min(Math.max(Math.round(area.width), 40), CANVAS.width);
-  area.height = Math.min(Math.max(Math.round(area.height), 40), CANVAS.height);
-  area.x = Math.min(Math.max(Math.round(area.x), 0), CANVAS.width - area.width);
-  area.y = Math.min(Math.max(Math.round(area.y), 0), CANVAS.height - area.height);
-}
-
-function renderPreview() {
-  if (!editing) return;
-  const preview = $('preview');
-  preview.replaceChildren();
-  for (const [key, widget] of Object.entries(WIDGETS)) {
-    const area = editing[key];
-    if (!area) continue;
-    const box = element('div', 'box', widget.label);
-    box.classList.toggle('off', !area.visible);
-    box.classList.toggle('selected', key === selected);
-    Object.assign(box.style, {
-      left: `${(area.x / CANVAS.width) * 100}%`, top: `${(area.y / CANVAS.height) * 100}%`,
-      width: `${(area.width / CANVAS.width) * 100}%`, height: `${(area.height / CANVAS.height) * 100}%`,
-    });
-    const handle = element('div', 'handle');
-    box.append(handle);
-    box.addEventListener('pointerdown', event => startDrag(event, key, event.target === handle));
-    preview.append(box);
-  }
-  renderWidgetForm();
-}
-
-function startDrag(event, key, resizing) {
-  event.preventDefault();
-  selected = key;
-  const area = editing[key];
-  const scale = CANVAS.width / $('preview').clientWidth;
-  const start = { x: event.clientX, y: event.clientY, area: { ...area } };
-  const move = moveEvent => {
-    const dx = (moveEvent.clientX - start.x) * scale;
-    const dy = (moveEvent.clientY - start.y) * scale;
-    if (resizing) { area.width = start.area.width + dx; area.height = start.area.height + dy; }
-    else { area.x = start.area.x + dx; area.y = start.area.y + dy; }
-    clampArea(area);
-    renderPreview();
-  };
-  const stop = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', stop); };
-  addEventListener('pointermove', move);
-  addEventListener('pointerup', stop);
-  renderPreview();
-}
-
-function renderWidgetForm() {
-  const form = $('widget-form');
-  form.replaceChildren(element('h3', '', `${WIDGETS[selected].label} の設定（プレビューの枠をクリックで切り替え）`));
-  const target = editing[selected];
-  if (!target) return;
-  for (const [field, label, type] of [...AREA_FIELDS, ...WIDGETS[selected].extra]) {
-    const input = element('input');
-    input.type = type;
-    input.dataset.field = field;
-    if (type === 'checkbox') input.checked = Boolean(target[field]);
-    else input.value = target[field];
-    input.addEventListener('change', () => {
-      target[field] = type === 'checkbox' ? input.checked : type === 'number' ? Number(input.value) : input.value;
-      if (['x', 'y', 'width', 'height'].includes(field)) clampArea(target);
-      renderPreview();
-    });
-    const wrapper = element('label', type === 'checkbox' ? 'inline' : '');
-    if (type === 'checkbox') wrapper.append(input, document.createTextNode(label));
-    else wrapper.append(document.createTextNode(label), input);
-    form.append(wrapper);
+function renderLook() {
+  const form = $('look-form');
+  form.replaceChildren();
+  for (const part of parts) {
+    const values = appearance[part.id];
+    const fields = LOOK_FIELDS[part.id];
+    if (!values || !fields) continue;
+    const group = element('fieldset', 'look-part');
+    group.dataset.part = part.id;
+    group.append(element('legend', '', part.label));
+    for (const [field, label, type] of fields) {
+      const input = element('input');
+      input.type = type;
+      input.dataset.field = field;
+      if (type === 'checkbox') input.checked = Boolean(values[field]);
+      else input.value = values[field];
+      input.addEventListener('change', () => {
+        values[field] = type === 'checkbox' ? input.checked : type === 'number' ? Number(input.value) : input.value;
+      });
+      const wrapper = element('label', type === 'checkbox' ? 'inline' : '');
+      if (type === 'checkbox') wrapper.append(input, document.createTextNode(label));
+      else wrapper.append(document.createTextNode(label), input);
+      group.append(wrapper);
+    }
+    form.append(group);
   }
 }
 
-$('layout-name').addEventListener('change', loadLayout);
-$('layout-add').addEventListener('click', () => attempt('layout-result', async () => {
-  const name = $('layout-new-name').value.trim();
-  layouts = await invoke('save_layout', { name, layout: structuredClone(layouts.default) });
-  $('layout-new-name').value = '';
-  renderLayoutNames(name);
-}, '追加しました'));
-$('layout-delete').addEventListener('click', () => attempt('layout-result', async () => {
-  layouts = await invoke('delete_layout', { name: currentName() });
-  renderLayoutNames('default');
-}, '消しました'));
-$('layout-save').addEventListener('click', () => attempt('layout-result', async () => {
-  layouts = await invoke('save_layout', { name: currentName(), layout: editing });
-  loadLayout();
+$('look-save').addEventListener('click', () => attempt('look-result', async () => {
+  appearance = await invoke('save_appearance', { appearance });
+  renderLook();
 }, '保存しました。OBS の表示にも反映しました。'));
-addEventListener('resize', () => { if (!$('layout-name').closest('[data-panel]').hidden) renderPreview(); });
 
 // --- OBS -------------------------------------------------------------------------------
 
@@ -449,8 +366,22 @@ $('plugin-install').addEventListener('click', () => attempt('plugin-result', asy
   $('plugin-result').textContent = '導入中…';
   await invoke('install_obs_plugin');
   await refreshPlugin();
-}, '導入しました。OBS を起動すると、今のシーンに YuiLiveKit のソースが追加されます。'));
-$('copy-url').addEventListener('click', () => attempt('copy-result', () => navigator.clipboard.writeText(overlayUrl), 'コピーしました'));
+}, '導入しました。OBS を起動すると、今のシーンに YuiLiveKit のグループが追加されます。'));
+function renderPartUrls() {
+  const body = $('part-urls').tBodies[0];
+  body.replaceChildren();
+  for (const part of parts) {
+    const row = element('tr');
+    const copy = element('button', '', 'コピー');
+    copy.addEventListener('click', () => attempt('copy-result', () => navigator.clipboard.writeText(part.url), `${part.label} の URL をコピーしました`));
+    const url = element('td');
+    url.append(element('code', '', part.url));
+    const action = element('td');
+    action.append(copy);
+    row.append(element('td', '', part.label), url, element('td', '', `${part.width}×${part.height}`), action);
+    body.append(row);
+  }
+}
 
 // --- Legacy import ---------------------------------------------------------------------
 
@@ -705,7 +636,7 @@ await listen('chat', ({ payload }) => {
     renderStatuses();
   } else if (payload.type === 'participants') renderParticipants(payload.items);
   else if (payload.type === 'ohayo') renderOhayo(payload);
-  else if (payload.type === 'layout') layouts[payload.name] = payload.layout;
+  else if (payload.type === 'appearance') { appearance = payload; delete appearance.type; renderLook(); }
   else if (payload.type === 'speech') $('speech-result').textContent = payload.message;
   else if (payload.type === 'subtitle') $('sub-latest').textContent = [payload.ja, payload.en].filter(Boolean).join(' / ');
   else if (payload.type === 'subtitle_state') { if (media) media.subtitles = payload; renderSubtitleState(payload); }
@@ -719,8 +650,8 @@ await listen('chat', ({ payload }) => {
 await listen('server-error', ({ payload }) => showError('server-error', payload));
 
 const state = await invoke('get_state');
-overlayUrl = state.overlay_url;
-$('overlay-url').textContent = overlayUrl;
+parts = state.parts;
+renderPartUrls();
 showError('server-error', state.server_error);
 Object.assign(statuses, state.statuses);
 renderStatuses();
@@ -730,8 +661,8 @@ renderSupport();
 renderParticipants(state.participants);
 renderOhayo(state.ohayo);
 renderToolSettings(state.tool_settings);
-layouts = state.layouts;
-renderLayoutNames();
+appearance = state.appearance;
+renderLook();
 if (!state.legacy_imported && state.legacy_candidates.length) {
   for (const path of state.legacy_candidates) $('legacy-path').append(element('option', '', path));
   $('legacy').hidden = false;

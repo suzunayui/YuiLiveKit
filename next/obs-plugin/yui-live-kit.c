@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Adds the YuiLiveKit overlay to OBS as one browser source, so the user needs
- * neither OBS WebSocket nor a password.
+ * Adds the YuiLiveKit overlay parts to OBS as browser sources in one group, so the user
+ * needs neither OBS WebSocket nor a password. Each part is its own source, so where it
+ * goes and what it sits in front of or behind are set in OBS.
  */
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -10,57 +11,88 @@
 
 OBS_DECLARE_MODULE()
 
-#define SOURCE_NAME "YuiLiveKit"
-#define DEFAULT_URL "http://127.0.0.1:5000/overlay"
+#define GROUP_NAME "YuiLiveKit"
 /* Written by the app in its data folder: %APPDATA%\<Tauri identifier>. */
 #define SOURCE_FILE "com.suzunayui.yuilivekit/obs-source.json"
+/* Which scene collections already got the parts once. */
+#define ADDED_FILE "added-parts.json"
 #define LOG_PREFIX "[yui-live-kit] "
+
+struct part {
+	const char *name;
+	const char *url;
+	long long width, height, x, y;
+};
+
+/* Used when the app has not written its file yet. Back to front, as the app writes them. */
+static const struct part default_parts[] = {
+	{"YuiLiveKit - 参加管理", "http://127.0.0.1:5000/overlay/participants", 500, 600, 1380, 40},
+	{"YuiLiveKit - おはよう", "http://127.0.0.1:5000/overlay/ohayo", 380, 120, 1500, 920},
+	{"YuiLiveKit - コメント", "http://127.0.0.1:5000/overlay/comments", 720, 636, 24, 420},
+	{"YuiLiveKit - 字幕", "http://127.0.0.1:5000/overlay/subtitles", 1600, 250, 160, 800},
+	{"YuiLiveKit - ニコニコ風", "http://127.0.0.1:5000/overlay/niconico", 1920, 880, 0, 100},
+};
+#define DEFAULT_COUNT (sizeof(default_parts) / sizeof(default_parts[0]))
+#define MAX_PARTS 16
 
 static bool loaded;
 
 MODULE_EXPORT const char *obs_module_description(void)
 {
-	return "Adds the YuiLiveKit overlay as a browser source";
+	return "Adds the YuiLiveKit overlay parts as browser sources";
 }
 
-static obs_data_t *source_settings(void)
+/* Reads the parts from the app's file; `file` keeps the strings alive until released. */
+static size_t read_parts(struct part *parts, obs_data_t **file, double *canvas_width)
 {
-	obs_data_t *settings = obs_data_create();
-	obs_data_set_string(settings, "url", DEFAULT_URL);
-	obs_data_set_int(settings, "width", 1920);
-	obs_data_set_int(settings, "height", 1080);
-
+	*canvas_width = 1920.0;
 	char *path = os_get_config_path_ptr(SOURCE_FILE);
-	obs_data_t *file = path ? obs_data_create_from_json_file(path) : NULL;
-	if (file) {
-		const char *url = obs_data_get_string(file, "url");
-		if (*url)
-			obs_data_set_string(settings, "url", url);
-		if (obs_data_get_int(file, "width") > 0)
-			obs_data_set_int(settings, "width", obs_data_get_int(file, "width"));
-		if (obs_data_get_int(file, "height") > 0)
-			obs_data_set_int(settings, "height", obs_data_get_int(file, "height"));
-		obs_data_release(file);
-	} else {
-		blog(LOG_INFO, LOG_PREFIX "no app settings at %s, using %s", path ? path : "(none)", DEFAULT_URL);
+	*file = path ? obs_data_create_from_json_file(path) : NULL;
+	size_t count = 0;
+	if (*file) {
+		if (obs_data_get_double(*file, "canvas_width") > 0)
+			*canvas_width = obs_data_get_double(*file, "canvas_width");
+
+		obs_data_array_t *sources = obs_data_get_array(*file, "sources");
+		size_t total = sources ? obs_data_array_count(sources) : 0;
+		for (size_t i = 0; i < total && count < MAX_PARTS; i++) {
+			/* The array keeps a reference, so the strings outlive this release. */
+			obs_data_t *item = obs_data_array_item(sources, i);
+			struct part part = {obs_data_get_string(item, "name"), obs_data_get_string(item, "url"),
+					    obs_data_get_int(item, "width"),       obs_data_get_int(item, "height"),
+					    obs_data_get_int(item, "x"),           obs_data_get_int(item, "y")};
+			if (*part.name && *part.url && part.width > 0 && part.height > 0)
+				parts[count++] = part;
+			obs_data_release(item);
+		}
+		obs_data_array_release(sources);
+	}
+	if (!count) {
+		blog(LOG_INFO, LOG_PREFIX "no app settings at %s, using the defaults", path ? path : "(none)");
+		for (size_t i = 0; i < DEFAULT_COUNT; i++)
+			parts[i] = default_parts[i];
+		count = DEFAULT_COUNT;
+		*canvas_width = 1920.0;
 	}
 	bfree(path);
-	return settings;
+	return count;
 }
 
-/* Fits the item to the canvas, whatever resolution OBS uses. */
-static void fit_to_canvas(obs_sceneitem_t *item)
+static obs_source_t *get_or_create(const struct part *part)
 {
-	struct obs_video_info ovi;
-	if (!obs_get_video_info(&ovi))
-		return;
-	struct vec2 bounds;
-	vec2_set(&bounds, (float)ovi.base_width, (float)ovi.base_height);
-	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_SCALE_INNER);
-	obs_sceneitem_set_bounds(item, &bounds);
+	obs_source_t *source = obs_get_source_by_name(part->name);
+	if (source)
+		return source;
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_string(settings, "url", part->url);
+	obs_data_set_int(settings, "width", part->width);
+	obs_data_set_int(settings, "height", part->height);
+	source = obs_source_create("browser_source", part->name, settings, NULL);
+	obs_data_release(settings);
+	return source;
 }
 
-/* Puts the source in the current scene, creating it first if it does not exist yet. */
+/* Puts the parts in the current scene inside one group, creating what does not exist yet. */
 static bool add_to_current_scene(void)
 {
 	obs_source_t *scene_source = obs_frontend_get_current_scene();
@@ -71,37 +103,68 @@ static bool add_to_current_scene(void)
 		return false;
 	}
 
-	obs_source_t *source = obs_get_source_by_name(SOURCE_NAME);
-	bool created = false;
-	if (!source) {
-		obs_data_t *settings = source_settings();
-		source = obs_source_create("browser_source", SOURCE_NAME, settings, NULL);
-		obs_data_release(settings);
-		created = source != NULL;
-	}
-	if (!source) {
-		obs_source_release(scene_source);
-		blog(LOG_WARNING, LOG_PREFIX "browser_source is not available in this OBS");
-		return false;
+	struct part parts[MAX_PARTS];
+	obs_data_t *file = NULL;
+	double canvas_width;
+	size_t count = read_parts(parts, &file, &canvas_width);
+
+	/* Positions are for the app's canvas; scale them to the one OBS uses. */
+	float scale = 1.0f;
+	struct obs_video_info ovi;
+	if (obs_get_video_info(&ovi) && canvas_width > 0)
+		scale = (float)(ovi.base_width / canvas_width);
+
+	bool ok = true;
+	obs_sceneitem_t *added[MAX_PARTS];
+	size_t added_count = 0;
+	/* Back to front: each new item goes on top of the ones before it. */
+	for (size_t i = 0; i < count; i++) {
+		if (obs_scene_find_source_recursive(scene, parts[i].name))
+			continue;
+		obs_source_t *source = get_or_create(&parts[i]);
+		if (!source) {
+			blog(LOG_WARNING, LOG_PREFIX "browser_source is not available in this OBS");
+			ok = false;
+			break;
+		}
+		obs_sceneitem_t *item = obs_scene_add(scene, source);
+		if (item) {
+			struct vec2 pos, size;
+			vec2_set(&pos, (float)parts[i].x * scale, (float)parts[i].y * scale);
+			vec2_set(&size, scale, scale);
+			obs_sceneitem_set_pos(item, &pos);
+			obs_sceneitem_set_scale(item, &size);
+			added[added_count++] = item;
+		}
+		obs_source_release(source);
 	}
 
-	if (!obs_scene_find_source(scene, SOURCE_NAME)) {
-		obs_sceneitem_t *item = obs_scene_add(scene, source);
-		if (item)
-			fit_to_canvas(item);
-		blog(LOG_INFO, LOG_PREFIX "added %s source to scene '%s'", created ? "a new" : "the existing",
-		     obs_source_get_name(scene_source));
+	obs_sceneitem_t *group = obs_scene_get_group(scene, GROUP_NAME);
+	if (group) {
+		/* Parts the user removed and added back from the Tools menu join the existing group. */
+		for (size_t i = 0; i < added_count; i++)
+			obs_sceneitem_group_add_item(group, added[i]);
+	} else if (added_count) {
+		obs_source_t *taken = obs_get_source_by_name(GROUP_NAME);
+		if (taken)
+			blog(LOG_WARNING, LOG_PREFIX "'%s' is already used by another source; adding without a group", GROUP_NAME);
+		else
+			obs_scene_insert_group2(scene, GROUP_NAME, added, added_count, true);
+		obs_source_release(taken);
 	}
-	obs_source_release(source);
+	int added_parts = (int)added_count;
+	blog(LOG_INFO, LOG_PREFIX "added %d part(s) to scene '%s'", added_parts, obs_source_get_name(scene_source));
+
+	obs_data_release(file);
 	obs_source_release(scene_source);
-	return true;
+	return ok;
 }
 
-/* Adds the source once per scene collection, so a source the user removed stays removed. */
+/* Adds the parts once per scene collection, so parts the user removed stay removed. */
 static void add_once_for_collection(void)
 {
 	char *collection = obs_frontend_get_current_scene_collection();
-	char *path = obs_module_config_path("added.json");
+	char *path = obs_module_config_path(ADDED_FILE);
 	obs_data_t *added = path ? obs_data_create_from_json_file_safe(path, "bak") : NULL;
 	if (!added)
 		added = obs_data_create();

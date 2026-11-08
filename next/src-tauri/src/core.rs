@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     db::{Db, Shown},
-    layout::{self, Layout, Layouts},
+    appearance::{self, Appearance},
     model::{Batch, ChatMessage, Platform},
     runtime::{Feature, Runtime, RuntimeState},
     speech::{self, AiSettings, Player, Queue, RateLimit, Secrets, Source, SpeechSettings, Utterance, Viewers},
@@ -22,7 +22,7 @@ use crate::{
     twitch, youtube,
 };
 
-const LAYOUTS_KEY: &str = "layouts";
+const APPEARANCE_KEY: &str = "appearance";
 const PARTICIPANT_KEYWORD_KEY: &str = "participant_keyword";
 const OHAYO_KEYWORDS_KEY: &str = "ohayo_keywords";
 const SPEECH_KEY: &str = "speech";
@@ -44,7 +44,7 @@ pub enum Notice {
     Status { platform: Platform, status: String, detail: Option<String> },
     Participants { items: Vec<Participant> },
     Ohayo(Ohayo),
-    Layout { name: String, layout: Layout },
+    Appearance(Appearance),
     /// Something went wrong with reading aloud or AI replies.
     Speech { message: String },
     Subtitle { ja: String, en: String },
@@ -399,39 +399,17 @@ impl Core {
         Ok(self.support())
     }
 
-    // --- Layouts ------------------------------------------------------------------------
+    // --- Appearance ---------------------------------------------------------------------
 
-    pub fn layouts(&self) -> Layouts {
-        layout::from_setting(self.db().setting(LAYOUTS_KEY).ok().flatten())
+    pub fn appearance(&self) -> Appearance {
+        appearance::from_setting(self.db().setting(APPEARANCE_KEY).ok().flatten())
     }
 
-    pub fn layout(&self, name: &str) -> Layout {
-        let mut layouts = self.layouts();
-        layouts.remove(name).unwrap_or_else(|| layouts.remove(layout::DEFAULT_NAME).unwrap_or_default())
-    }
-
-    pub fn save_layout(&self, name: &str, layout: Layout) -> Result<Layouts, String> {
-        if !layout::valid_name(name) {
-            return Err("配置の名前は半角英数字、-、_ の32文字までにしてください".into());
-        }
-        let layout = layout.sanitized();
-        let mut layouts = self.layouts();
-        layouts.insert(name.to_string(), layout.clone());
-        self.db().set_setting(LAYOUTS_KEY, &serde_json::to_value(&layouts).map_err(|e| e.to_string())?)?;
-        self.notify(Notice::Layout { name: name.to_string(), layout });
-        Ok(layouts)
-    }
-
-    pub fn delete_layout(&self, name: &str) -> Result<Layouts, String> {
-        if name == layout::DEFAULT_NAME {
-            return Err("標準の配置は消せません".into());
-        }
-        let mut layouts = self.layouts();
-        layouts.remove(name);
-        self.db().set_setting(LAYOUTS_KEY, &serde_json::to_value(&layouts).map_err(|e| e.to_string())?)?;
-        // Scenes still using the name fall back to the default layout.
-        self.notify(Notice::Layout { name: name.to_string(), layout: self.layout(layout::DEFAULT_NAME) });
-        Ok(layouts)
+    pub fn save_appearance(&self, appearance: Appearance) -> Result<Appearance, String> {
+        let appearance = appearance.sanitized();
+        self.db().set_setting(APPEARANCE_KEY, &serde_json::to_value(&appearance).map_err(|e| e.to_string())?)?;
+        self.notify(Notice::Appearance(appearance.clone()));
+        Ok(appearance)
     }
 
     // --- Reading aloud and AI replies ---------------------------------------------------
@@ -994,18 +972,16 @@ mod tests {
     }
 
     #[test]
-    fn layouts_are_saved_validated_and_announced() {
+    fn appearance_is_saved_cleaned_and_announced() {
         let core = Core::new(Db::open_in_memory().unwrap());
         let mut notices = core.subscribe();
-        let mut game = Layout::default();
-        game.comments.area.x = 300;
-        assert!(core.save_layout("bad name", game.clone()).is_err());
-        let layouts = core.save_layout("game", game).unwrap();
-        assert_eq!(layouts.keys().collect::<Vec<_>>(), ["default", "game"]);
-        assert!(matches!(notices.try_recv().unwrap(), Notice::Layout { name, layout } if name == "game" && layout.comments.area.x == 300));
-        assert_eq!(core.layout("missing"), Layout::default());
-        assert!(core.delete_layout("default").is_err());
-        assert_eq!(core.delete_layout("game").unwrap().len(), 1);
+        assert_eq!(core.appearance(), Appearance::default());
+        let mut look = Appearance::default();
+        look.comments.font_size = 999;
+        let saved = core.save_appearance(look).unwrap();
+        assert_eq!(saved.comments.font_size, 200);
+        assert!(matches!(notices.try_recv().unwrap(), Notice::Appearance(a) if a.comments.font_size == 200));
+        assert_eq!(core.appearance().comments.font_size, 200);
     }
 
     #[test]

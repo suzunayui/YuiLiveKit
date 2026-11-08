@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::{
     extract::{
         ws::{rejection::WebSocketUpgradeRejection, Message, WebSocket, WebSocketUpgrade},
-        Query, Request, State,
+        Path, Request, State,
     },
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
@@ -59,41 +59,42 @@ pub fn router(core: Arc<Core>, port: u16) -> Router {
         origins: Arc::from([format!("http://127.0.0.1:{port}"), format!("http://localhost:{port}")]),
     };
     Router::new()
-        .route("/overlay", get(|| async { Html(OVERLAY_HTML) }))
+        .route("/overlay/{part}", get(overlay_page))
         .route("/overlay/ws", get(overlay_ws))
         .route("/health", get(|| async { "ok" }))
         .layer(middleware::from_fn_with_state(state.clone(), check_host))
         .with_state(state)
 }
 
-#[derive(serde::Deserialize)]
-struct OverlayQuery {
-    layout: Option<String>,
+/// One page serves every part; it reads which one from its path.
+async fn overlay_page(Path(part): Path<String>) -> Response {
+    match crate::appearance::part(&part) {
+        Some(_) => Html(OVERLAY_HTML).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 /// The upgrade is taken as a Result so the origin is checked before anything else answers.
 async fn overlay_ws(
     headers: HeaderMap,
     State(state): State<AppState>,
-    Query(query): Query<OverlayQuery>,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
     if !origin_allowed(&headers, &state.origins) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let layout = query.layout.filter(|name| crate::layout::valid_name(name)).unwrap_or_else(|| crate::layout::DEFAULT_NAME.into());
     match ws {
-        Ok(ws) => ws.on_upgrade(move |socket| overlay_socket(socket, state.core, layout)),
+        Ok(ws) => ws.on_upgrade(move |socket| overlay_socket(socket, state.core)),
         Err(rejection) => rejection.into_response(),
     }
 }
 
 /// Everything the page needs to draw from scratch.
-fn snapshot_json(core: &Core, layout: &str) -> String {
+fn snapshot_json(core: &Core) -> String {
     serde_json::json!({
         "type": "snapshot",
         "messages": core.snapshot(SNAPSHOT_SIZE),
-        "layout": core.layout(layout),
+        "appearance": core.appearance(),
         "participants": core.participants(),
         "ohayo": core.ohayo(),
         "translations": core.translations(),
@@ -102,9 +103,9 @@ fn snapshot_json(core: &Core, layout: &str) -> String {
     .to_string()
 }
 
-async fn overlay_socket(mut socket: WebSocket, core: Arc<Core>, layout: String) {
+async fn overlay_socket(mut socket: WebSocket, core: Arc<Core>) {
     let mut notices = core.subscribe();
-    if socket.send(Message::Text(snapshot_json(&core, &layout).into())).await.is_err() {
+    if socket.send(Message::Text(snapshot_json(&core).into())).await.is_err() {
         return;
     }
     loop {
@@ -116,10 +117,9 @@ async fn overlay_socket(mut socket: WebSocket, core: Arc<Core>, layout: String) 
                     | Ok(Notice::SubtitleState(_))
                     | Ok(Notice::TranslationState(_))
                     | Ok(Notice::Runtime(_)) => continue,
-                    Ok(Notice::Layout { name, .. }) if name != layout => continue,
                     Ok(notice) => serde_json::to_string(&notice).unwrap_or_default(),
                     // Too far behind: start over from the current state.
-                    Err(RecvError::Lagged(_)) => snapshot_json(&core, &layout),
+                    Err(RecvError::Lagged(_)) => snapshot_json(&core),
                     Err(RecvError::Closed) => break,
                 };
                 if socket.send(Message::Text(text.into())).await.is_err() {
@@ -157,10 +157,12 @@ mod tests {
 
     #[tokio::test]
     async fn answers_only_local_hosts() {
-        assert_eq!(status("127.0.0.1:5000", "/overlay", None).await, StatusCode::OK);
+        assert_eq!(status("127.0.0.1:5000", "/overlay/comments", None).await, StatusCode::OK);
+        assert_eq!(status("127.0.0.1:5000", "/overlay/niconico", None).await, StatusCode::OK);
+        assert_eq!(status("127.0.0.1:5000", "/overlay/unknown", None).await, StatusCode::NOT_FOUND);
         assert_eq!(status("localhost:5000", "/health", None).await, StatusCode::OK);
-        assert_eq!(status("evil.example:5000", "/overlay", None).await, StatusCode::FORBIDDEN);
-        assert_eq!(status("127.0.0.1:5001", "/overlay", None).await, StatusCode::FORBIDDEN);
+        assert_eq!(status("evil.example:5000", "/overlay/comments", None).await, StatusCode::FORBIDDEN);
+        assert_eq!(status("127.0.0.1:5001", "/overlay/comments", None).await, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

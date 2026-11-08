@@ -7,11 +7,10 @@
 </head>
 <body>
   <header>
-    <h1>YuiLiveKit</h1>
     <div id="statuses" aria-live="polite"></div>
   </header>
 
-  <nav id="tabs" role="tablist">
+  <nav id="tabs" role="tablist" aria-orientation="vertical">
     <button role="tab" data-tab="home" aria-selected="true">ホーム</button>
     <button role="tab" data-tab="comments">コメント</button>
     <button role="tab" data-tab="support">スパチャ・メンバー <span id="support-unread"></span></button>
@@ -20,7 +19,7 @@
     <button role="tab" data-tab="ai">AI返答</button>
     <button role="tab" data-tab="emoji">絵文字</button>
     <button role="tab" data-tab="media">字幕・翻訳</button>
-    <button role="tab" data-tab="layout">配置</button>
+    <button role="tab" data-tab="look">見た目</button>
     <button role="tab" data-tab="obs">OBS</button>
   </nav>
 
@@ -209,21 +208,14 @@
       </div>
     </section>
 
-    <section data-panel="layout" hidden>
+    <section data-panel="look" hidden>
       <div class="card">
-        <h2>配置</h2>
+        <h2>見た目</h2>
+        <p class="hint">部品ごとに OBS のソースが分かれています。位置、大きさ、重なり順（3D モデルの前か後ろかなど）は OBS で決めます。</p>
+        <div id="look-form"></div>
         <div class="buttons">
-          <select id="layout-name"></select>
-          <input id="layout-new-name" placeholder="新しい配置の名前（半角英数字）">
-          <button id="layout-add">追加</button>
-          <button id="layout-delete">この配置を消す</button>
-        </div>
-        <p class="hint">OBS で使う URL: <code id="layout-url"></code></p>
-        <div id="preview" aria-label="OBS 画面のプレビュー"></div>
-        <div id="widget-form"></div>
-        <div class="buttons">
-          <button id="layout-save" class="primary">保存して OBS に反映</button>
-          <span id="layout-result" class="hint"></span>
+          <button id="look-save" class="primary">保存して OBS に反映</button>
+          <span id="look-result" class="hint"></span>
         </div>
       </div>
     </section>
@@ -231,7 +223,7 @@
     <section data-panel="obs" hidden>
       <div class="card">
         <h2>OBS プラグイン</h2>
-        <p>プラグインを入れると、OBS の起動時に今のシーンへ YuiLiveKit のソースを自動で追加します。追加は一度だけで、消したソースは戻しません。OBS の「ツール」メニューからも追加できます。</p>
+        <p>プラグインを入れると、OBS の起動時に今のシーンへ、部品ごとのソースを「YuiLiveKit」グループにまとめて追加します。追加はシーンコレクションごとに一度だけで、消したソースは戻しません。OBS の「ツール」メニューからは、今のシーンに無い部品を追加できます。</p>
         <p>状態: <strong id="plugin-state">確認中…</strong></p>
         <p class="hint" id="plugin-path"></p>
         <button id="plugin-install" class="primary">OBS プラグインを導入</button>
@@ -239,8 +231,8 @@
       </div>
       <div class="card">
         <h2>手動で追加する場合</h2>
-        <p>OBS にブラウザソースを追加し、URL に <code id="overlay-url"></code> を入れ、幅 1920、高さ 1080 にします。</p>
-        <button id="copy-url">URL をコピー</button>
+        <p>使う部品ごとに OBS にブラウザソースを追加し、URL、幅、高さを次のとおりにします。</p>
+        <table id="part-urls"><thead><tr><th>部品</th><th>URL</th><th>幅×高さ</th><th></th></tr></thead><tbody></tbody></table>
         <span id="copy-result" class="hint"></span>
       </div>
     </section>
