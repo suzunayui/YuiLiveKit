@@ -1,6 +1,6 @@
 [package]
 name = "yui-live-kit"
-version = "2026.1108.3"
+version = "2026.1108.4"
 description = "YuiLiveKit rewritten on Tauri"
 edition = "2021"
 publish = false
