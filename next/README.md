@@ -43,4 +43,4 @@ Visual Studio の C++ ツールと、OBS 33.0.1 のインストールが必要�
 obs-plugin\build.cmd
 ```
 
-`obs-plugin/build/yui-live-kit.dll` ができます。プラグインのソースは GPL-2.0-or-later です。
+`obs-plugin/build/yui-live-kit.dll` ができます。アプリに組み込むには `obs-plugin/prebuilt/` にコピーしてからアプリをビルドします（アプリの「OBS プラグインを導入」で入るのはこのファイルです）。プラグインのソースは GPL-2.0-or-later です。

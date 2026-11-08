@@ -19,8 +19,8 @@ use yui_live_kit::{
 const DEFAULT_PORT: u16 = 5000;
 const CANVAS: (u32, u32) = (1920, 1080);
 const LIST_SIZE: usize = 300;
-/// Built by obs-plugin/build.cmd and copied to obs-plugin/dist, so the app can install it.
-const OBS_PLUGIN: &[u8] = include_bytes!("../../obs-plugin/dist/yui-live-kit.dll");
+/// Built by obs-plugin/build.cmd and copied to obs-plugin/prebuilt, so the app can install it.
+const OBS_PLUGIN: &[u8] = include_bytes!("../../obs-plugin/prebuilt/yui-live-kit.dll");
 
 type CoreState<'a> = tauri::State<'a, Arc<Core>>;
 
