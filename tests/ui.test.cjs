@@ -25,7 +25,10 @@ const defaultAppearance = {
   ohayo: { font_size: 40, label: 'おはよう' },
   subtitles: { font_size: 46, english_size: 32, duration: 10, alignment: 'center', text_color: '#ffffff', english_color: '#ffffff' },
 };
-const part = (id, label, width, height) => ({ id, label, source: `YuiLiveKit - ${label}`, url: `http://127.0.0.1:5000/overlay/${id}`, width, height });
+const part = (id, label, width, height) => ({
+  id, label, source: `YuiLiveKit - ${label}`, url: `http://127.0.0.1:5000/overlay/${id}`, width, height,
+  drag_url: `http://127.0.0.1:5000/overlay/${id}?layer-name=${encodeURIComponent(`YuiLiveKit - ${label}`)}&layer-width=${width}&layer-height=${height}`,
+});
 const defaultParts = [
   part('participants', '参加管理', 500, 600), part('ohayo', 'おはよう', 380, 120), part('comments', '通常コメント', 720, 636),
   part('subtitles', '字幕', 1600, 250), part('niconico', 'ニコニコ風', 1920, 880),
@@ -249,6 +252,15 @@ test('support, participants, appearance and OBS tabs', async () => {
     assert.deepEqual(await page.$$eval('#part-urls tbody tr', rows => rows.map(r => r.children[1].textContent)),
       defaultParts.map(p => p.url), 'each part has its own URL');
     assert.equal(await page.textContent('#part-urls tbody tr:nth-child(3) td:nth-child(3)'), '720×636');
+    const dragged = await page.evaluate(() => {
+      const link = document.querySelector('#part-urls tbody tr:nth-child(3) a.drag');
+      const data = new DataTransfer();
+      link.dispatchEvent(new DragEvent('dragstart', { dataTransfer: data, bubbles: true }));
+      return [link.draggable, data.getData('text/uri-list'), data.getData('text/plain')];
+    });
+    assert.deepEqual(dragged, [true, defaultParts[2].drag_url, defaultParts[2].drag_url], 'dragging hands OBS the URL with the source name and size');
+    await page.click('#part-urls tbody tr:nth-child(3) a.drag');
+    assert.ok(page.url().endsWith('/index.html'), 'clicking the drag handle does not navigate');
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

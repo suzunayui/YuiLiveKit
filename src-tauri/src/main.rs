@@ -42,6 +42,7 @@ struct PartSource {
     label: &'static str,
     source: &'static str,
     url: String,
+    drag_url: String,
     width: u32,
     height: u32,
 }
@@ -49,7 +50,10 @@ struct PartSource {
 fn part_sources(port: u16) -> Vec<PartSource> {
     appearance::PARTS
         .iter()
-        .map(|p| PartSource { id: p.id, label: p.label, source: p.source, url: part_url(port, p.id), width: p.width, height: p.height })
+        .map(|p| {
+            let url = part_url(port, p.id);
+            PartSource { id: p.id, label: p.label, source: p.source, drag_url: appearance::drag_url(&url, p), url, width: p.width, height: p.height }
+        })
         .collect()
 }
 
@@ -484,9 +488,6 @@ fn main() {
                 let _ = window.set_title(&format!("YuiLiveKit {}", app.package_info().version));
             }
             let data_dir = app.path().app_data_dir()?;
-            if let Err(error) = write_obs_source_file(&data_dir, port) {
-                eprintln!("could not write obs-source.json: {error}");
-            }
             let core = Core::new(Db::open(&data_dir.join("livekit.db"))?);
             app.manage(core.clone());
             tauri::async_runtime::spawn(core.clone().run_speech());
@@ -504,6 +505,11 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 let result = async {
                     let listener = yui_live_kit::server::bind(port)?;
+                    // The OBS plugin reloads its sources when this file changes, so it is
+                    // written only once the overlay pages can be loaded.
+                    if let Err(error) = write_obs_source_file(&data_dir, port) {
+                        eprintln!("could not write obs-source.json: {error}");
+                    }
                     axum::serve(listener, yui_live_kit::server::router(core, port)).await
                 }
                 .await;

@@ -32,6 +32,21 @@ pub fn part(id: &str) -> Option<&'static Part> {
     PARTS.iter().find(|p| p.id == id)
 }
 
+fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// The URL to drag onto OBS. OBS turns a dropped URL into a browser source and takes its
+/// name and size from these `layer-*` parameters.
+pub fn drag_url(url: &str, part: &Part) -> String {
+    format!("{url}?layer-name={}&layer-width={}&layer-height={}", percent_encode(part.source), part.width, part.height)
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Comments {
@@ -219,5 +234,14 @@ mod tests {
         }
         assert_eq!(part("comments").unwrap().label, "通常コメント");
         assert!(part("layout").is_none());
+    }
+
+    #[test]
+    fn drag_urls_carry_the_source_name_and_size() {
+        let comments = part("comments").unwrap();
+        assert_eq!(
+            drag_url("http://127.0.0.1:5000/overlay/comments", comments),
+            "http://127.0.0.1:5000/overlay/comments?layer-name=YuiLiveKit%20-%20%E3%82%B3%E3%83%A1%E3%83%B3%E3%83%88&layer-width=720&layer-height=636"
+        );
     }
 }

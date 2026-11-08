@@ -6,8 +6,17 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- Starting and stopping stay at the top whichever tab is open. -->
   <header>
+    <form id="connect" autocomplete="off">
+      <label class="field">YouTube <input id="youtube" placeholder="@ハンドル / チャンネルID / 動画ID / URL" spellcheck="false"></label>
+      <label class="field">Twitch <input id="twitch" placeholder="チャンネル名 / URL" spellcheck="false"></label>
+      <button id="start" type="submit" class="primary">開始</button>
+      <button id="stop" type="button">停止</button>
+    </form>
     <div id="statuses" aria-live="polite"></div>
+    <p id="start-error" class="error" hidden></p>
+    <p id="server-error" class="error" hidden></p>
   </header>
 
   <nav id="tabs" role="tablist" aria-orientation="vertical">
@@ -25,18 +34,6 @@
 
   <main>
     <section data-panel="home">
-      <div class="card">
-        <h2>チャットの取得</h2>
-        <label>YouTube <input id="youtube" placeholder="@ハンドル / チャンネルID / 動画ID / YouTubeのURL" autocomplete="off" spellcheck="false"></label>
-        <label>Twitch <input id="twitch" placeholder="チャンネル名 / twitch.tvのURL" autocomplete="off" spellcheck="false"></label>
-        <div class="buttons">
-          <button id="start" class="primary">チャット取得開始</button>
-          <button id="stop">停止</button>
-        </div>
-        <p id="start-error" class="error" hidden></p>
-        <p id="server-error" class="error" hidden></p>
-      </div>
-
       <div class="card">
         <h2>おはようカウンター</h2>
         <div class="counter">
@@ -224,14 +221,16 @@
       <div class="card">
         <h2>OBS プラグイン</h2>
         <p>プラグインを入れると、OBS の起動時に今のシーンへ、部品ごとのソースを「YuiLiveKit」グループにまとめて追加します。追加はシーンコレクションごとに一度だけで、消したソースは戻しません。OBS の「ツール」メニューからは、今のシーンに無い部品を追加できます。</p>
+        <p>アプリより先に OBS を起動しても、アプリが起動したときに YuiLiveKit のソースを自動で読み込み直すので、表示の更新は要りません。</p>
         <p>状態: <strong id="plugin-state">確認中…</strong></p>
         <p class="hint" id="plugin-path"></p>
         <button id="plugin-install" class="primary">OBS プラグインを導入</button>
         <p id="plugin-result"></p>
       </div>
       <div class="card">
-        <h2>手動で追加する場合</h2>
-        <p>使う部品ごとに OBS にブラウザソースを追加し、URL、幅、高さを次のとおりにします。</p>
+        <h2>プラグインを使わずに追加する場合</h2>
+        <p>使う部品の「⠿ ドラッグ」を OBS の「ソース」欄かプレビューにドラッグし、確認で「はい」を選ぶと、名前と大きさが設定されたブラウザソースとして追加されます。上から順に追加すると、下の部品ほど手前に重なります。</p>
+        <p class="hint">ドラッグできないときは、URL をコピーしてブラウザソースを追加し、幅と高さを表のとおりにします。プラグインを入れていない場合、アプリより先に OBS を起動したときは、ソースを右クリックして「更新」を押してください。</p>
         <table id="part-urls"><thead><tr><th>部品</th><th>URL</th><th>幅×高さ</th><th></th></tr></thead><tbody></tbody></table>
         <span id="copy-result" class="hint"></span>
       </div>

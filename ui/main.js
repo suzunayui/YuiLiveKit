@@ -185,7 +185,9 @@ function renderStatuses() {
 $('youtube').value = recall('youtube');
 $('twitch').value = recall('twitch');
 
-$('start').addEventListener('click', async () => {
+// Enter in either box starts too.
+$('connect').addEventListener('submit', async event => {
+  event.preventDefault();
   showError('start-error', '');
   remember('youtube', $('youtube').value.trim());
   remember('twitch', $('twitch').value.trim());
@@ -372,12 +374,24 @@ function renderPartUrls() {
   body.replaceChildren();
   for (const part of parts) {
     const row = element('tr');
+    const drag = element('a', 'drag', '⠿ ドラッグ');
+    drag.href = part.drag_url;
+    drag.draggable = true;
+    drag.title = `${part.label} を OBS にドラッグして追加`;
+    // Only for dragging; following the link would take this window away.
+    drag.addEventListener('click', event => event.preventDefault());
+    drag.addEventListener('dragstart', event => {
+      event.dataTransfer.effectAllowed = 'copyLink';
+      event.dataTransfer.setData('text/uri-list', part.drag_url);
+      event.dataTransfer.setData('text/plain', part.drag_url);
+    });
     const copy = element('button', '', 'コピー');
     copy.addEventListener('click', () => attempt('copy-result', () => navigator.clipboard.writeText(part.url), `${part.label} の URL をコピーしました`));
     const url = element('td');
     url.append(element('code', '', part.url));
     const action = element('td');
-    action.append(copy);
+    action.className = 'part-actions';
+    action.append(drag, copy);
     row.append(element('td', '', part.label), url, element('td', '', `${part.width}×${part.height}`), action);
     body.append(row);
   }

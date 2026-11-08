@@ -3,11 +3,16 @@
  * Adds the YuiLiveKit overlay parts to OBS as browser sources in one group, so the user
  * needs neither OBS WebSocket nor a password. Each part is its own source, so where it
  * goes and what it sits in front of or behind are set in OBS.
+ *
+ * It also reloads those sources when the app starts. A browser source that loaded while
+ * the app was not running shows an error page, and that page cannot reconnect by itself.
  */
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <graphics/vec2.h>
 #include <util/platform.h>
+#include <sys/stat.h>
+#include <string.h>
 
 OBS_DECLARE_MODULE()
 
@@ -36,6 +41,12 @@ static const struct part default_parts[] = {
 #define MAX_PARTS 16
 
 static bool loaded;
+
+/* The app rewrites its file each time its server starts; a new time means it just started. */
+static time_t file_time;
+static float since_check;
+#define CHECK_SECONDS 2.0f
+#define MAX_REFRESH 64
 
 MODULE_EXPORT const char *obs_module_description(void)
 {
@@ -188,6 +199,84 @@ static void add_once_for_collection(void)
 	bfree(collection);
 }
 
+static time_t app_file_time(void)
+{
+	char *path = os_get_config_path_ptr(SOURCE_FILE);
+	struct stat st;
+	time_t time = path && os_stat(path, &st) == 0 ? st.st_mtime : 0;
+	bfree(path);
+	return time;
+}
+
+struct overlay_sources {
+	char base[256];
+	obs_source_t *found[MAX_REFRESH];
+	size_t count;
+};
+
+/* Collects the browser sources that show the app's pages, whoever added them. */
+static bool collect_overlay_source(void *param, obs_source_t *source)
+{
+	struct overlay_sources *list = param;
+	if (list->count >= MAX_REFRESH || strcmp(obs_source_get_unversioned_id(source), "browser_source") != 0)
+		return true;
+	obs_data_t *settings = obs_source_get_settings(source);
+	const char *url = obs_data_get_string(settings, "url");
+	if (!obs_data_get_bool(settings, "is_local_file") && strncmp(url, list->base, strlen(list->base)) == 0) {
+		obs_source_t *kept = obs_source_get_ref(source);
+		if (kept)
+			list->found[list->count++] = kept;
+	}
+	obs_data_release(settings);
+	return true;
+}
+
+/* Reloads every browser source whose URL is one of the app's pages. Runs on the UI thread. */
+static void refresh_overlay_sources(void *data)
+{
+	UNUSED_PARAMETER(data);
+	struct overlay_sources list = {.base = "http://127.0.0.1:5000/overlay/"};
+	struct part parts[MAX_PARTS];
+	obs_data_t *file = NULL;
+	double canvas_width;
+	if (read_parts(parts, &file, &canvas_width)) {
+		const char *marker = strstr(parts[0].url, "/overlay/");
+		size_t length = marker ? (size_t)(marker - parts[0].url) + strlen("/overlay/") : 0;
+		if (length && length < sizeof(list.base)) {
+			memcpy(list.base, parts[0].url, length);
+			list.base[length] = '\0';
+		}
+	}
+	obs_data_release(file);
+
+	obs_enum_sources(collect_overlay_source, &list);
+	for (size_t i = 0; i < list.count; i++) {
+		obs_properties_t *props = obs_source_properties(list.found[i]);
+		obs_property_t *refresh = props ? obs_properties_get(props, "refreshnocache") : NULL;
+		if (refresh)
+			obs_property_button_clicked(refresh, list.found[i]);
+		obs_properties_destroy(props);
+		obs_source_release(list.found[i]);
+	}
+	blog(LOG_INFO, LOG_PREFIX "the app started; reloaded %d source(s) under %s", (int)list.count, list.base);
+}
+
+static void on_tick(void *data, float seconds)
+{
+	UNUSED_PARAMETER(data);
+	since_check += seconds;
+	if (since_check < CHECK_SECONDS)
+		return;
+	since_check = 0.0f;
+	time_t time = app_file_time();
+	if (time && time != file_time) {
+		file_time = time;
+		obs_queue_task(OBS_TASK_UI, refresh_overlay_sources, NULL, false);
+	} else if (time) {
+		file_time = time;
+	}
+}
+
 static void on_event(enum obs_frontend_event event, void *data)
 {
 	UNUSED_PARAMETER(data);
@@ -207,6 +296,8 @@ static void on_menu(void *data)
 
 bool obs_module_load(void)
 {
+	file_time = app_file_time();
+	obs_add_tick_callback(on_tick, NULL);
 	obs_frontend_add_event_callback(on_event, NULL);
 	obs_frontend_add_tools_menu_item("YuiLiveKit を今のシーンに追加", on_menu, NULL);
 	return true;
@@ -214,5 +305,6 @@ bool obs_module_load(void)
 
 void obs_module_unload(void)
 {
+	obs_remove_tick_callback(on_tick, NULL);
 	obs_frontend_remove_event_callback(on_event, NULL);
 }
