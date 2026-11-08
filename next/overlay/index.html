@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>YuiLiveKit Overlay</title>
+<style>
+  /* Each OBS source shows one part, which fills the source. */
+  html, body { margin: 0; width: 100vw; height: 100vh; background: transparent; overflow: hidden;
+    font-family: "Noto Sans JP", "Yu Gothic UI", "Meiryo", sans-serif; }
+  .widget { position: absolute; inset: 0; overflow: hidden; }
+  .widget[hidden] { display: none; }
+
+  #comments { display: flex; flex-direction: column; justify-content: flex-end; gap: 8px; }
+  .msg { display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; border-radius: 16px; flex: none;
+    background: var(--comment-bg); color: var(--comment-text); font-size: var(--comment-size); font-weight: 600; line-height: 1.35;
+    text-shadow: 0 0 3px rgba(0, 0, 0, 0.9); animation: in 0.25s ease-out; overflow-wrap: anywhere; }
+  .msg.membership { background: #1e7d32; }
+  .msg.tier1 { background: #1565c0; } .msg.tier2 { background: #00897b; }
+  .msg.tier3 { background: #f9a825; color: #111; text-shadow: none; } .msg.tier4 { background: #c2185b; }
+  .avatar { flex: none; width: 1.7em; height: 1.7em; border-radius: 50%; object-fit: cover; }
+  .no-icons .avatar { display: none; }
+  .body { min-width: 0; }
+  .author { color: var(--comment-author); margin-right: 8px; }
+  .amount { margin-right: 8px; }
+  img.emoji { height: 1.4em; vertical-align: middle; margin: 0 2px; }
+  img.sticker { height: 3em; vertical-align: middle; }
+  @keyframes in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  .bullet { position: absolute; left: 0; white-space: nowrap; font-weight: 800; font-size: var(--nico-size);
+    color: var(--nico-color); will-change: transform;
+    text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 0 6px #000; }
+
+  #participants { color: #fff; font-size: var(--participants-size); font-weight: 700; text-shadow: 0 0 4px #000; }
+  #participants h2 { margin: 0 0 8px; font-size: 1em; }
+  #participants ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  #participants.horizontal ol { flex-direction: row; flex-wrap: wrap; }
+  #participants li { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 12px; background: rgba(0, 0, 0, 0.7); }
+  #participants .rank { color: #ffd54f; }
+
+  #subtitles { display: flex; flex-direction: column; justify-content: flex-end; }
+  #subtitles .box { background: #000; border: 3px solid #fff; border-radius: 20px; padding: 14px 28px; font-weight: 700;
+    line-height: 1.35; text-align: var(--sub-align); overflow-wrap: anywhere; }
+  #subtitles .box[hidden] { display: none; }
+  #sub-ja { margin: 0; font-size: var(--sub-size); color: var(--sub-color); }
+  #sub-en { margin: 6px 0 0; font-size: var(--sub-en-size); color: var(--sub-en-color); }
+  .translation { margin-top: 6px; padding-top: 6px; border-top: 1px solid currentColor; white-space: pre-wrap; }
+
+  #ohayo { display: flex; align-items: center; justify-content: center; gap: 0.4em; color: #fff; font-weight: 800;
+    font-size: var(--ohayo-size); background: rgba(0, 0, 0, 0.6); border-radius: 18px; text-shadow: 0 0 6px #000; }
+</style>
+</head>
+<body>
+<div id="niconico" class="widget" hidden></div>
+<div id="participants" class="widget" hidden><h2 id="participants-title"></h2><ol id="participants-list"></ol></div>
+<div id="ohayo" class="widget" hidden><span id="ohayo-label"></span><span id="ohayo-count">0</span></div>
+<div id="comments" class="widget" hidden></div>
+<div id="subtitles" class="widget" hidden><div class="box" id="sub-box" hidden><p id="sub-ja"></p><p id="sub-en"></p></div></div>
+<script>
+'use strict';
+// Everything from chat is set with textContent, or as an image URL the app already checked.
+const $ = id => document.getElementById(id);
+// The page serves every part; the path says which one this source shows.
+const PART = location.pathname.split('/').filter(Boolean).pop();
+const shown = new Map();
+const bullets = new Map();
+const translations = new Map();
+let look = null;
+let subtitleTimer = null;
+if ($(PART)) $(PART).hidden = false;
+
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function image(className, url, alt) {
+  const node = element('img', className);
+  node.src = url;
+  node.alt = alt || '';
+  return node;
+}
+
+function appendParts(target, message) {
+  for (const part of message.parts || []) {
+    if (part.type === 'text') target.append(document.createTextNode(part.text));
+    else target.append(image(part.type === 'sticker' ? 'sticker' : 'emoji', part.url, part.alt));
+  }
+  if (!(message.parts || []).length) target.append(document.createTextNode(message.text || ''));
+}
+
+function applyAppearance(next) {
+  look = next;
+  const vars = document.body.style;
+  vars.setProperty('--comment-bg', next.comments.background);
+  vars.setProperty('--comment-text', next.comments.text_color);
+  vars.setProperty('--comment-author', next.comments.author_color);
+  vars.setProperty('--comment-size', `${next.comments.font_size}px`);
+  vars.setProperty('--nico-size', `${next.niconico.font_size}px`);
+  vars.setProperty('--nico-color', next.niconico.color);
+  vars.setProperty('--participants-size', `${next.participants.font_size}px`);
+  vars.setProperty('--ohayo-size', `${next.ohayo.font_size}px`);
+  vars.setProperty('--sub-size', `${next.subtitles.font_size}px`);
+  vars.setProperty('--sub-en-size', `${next.subtitles.english_size}px`);
+  vars.setProperty('--sub-color', next.subtitles.text_color);
+  vars.setProperty('--sub-en-color', next.subtitles.english_color);
+  vars.setProperty('--sub-align', next.subtitles.alignment);
+  $('comments').classList.toggle('no-icons', !next.comments.show_icons);
+  $('participants').classList.toggle('horizontal', next.participants.horizontal);
+  $('participants-title').textContent = next.participants.title;
+  $('ohayo-label').textContent = next.ohayo.label;
+  trimComments();
+}
+
+// --- Comments ------------------------------------------------------------------------
+
+/** Yen tiers apply only when YouTube sent no colors (other currencies have no amount). */
+function tier(message) {
+  const yen = message.amount_micros == null ? 0 : message.amount_micros / 1e6;
+  if (yen >= 10000) return 'tier4';
+  if (yen >= 2000) return 'tier3';
+  if (yen >= 500) return 'tier2';
+  return 'tier1';
+}
+
+function renderComment(message) {
+  const node = element('div', 'msg');
+  node.dataset.key = message.key;
+  const kind = message.kind;
+  if (['membership', 'gift_purchase', 'gift_redeem'].includes(kind)) node.classList.add('membership');
+  if (['paid', 'sticker', 'bits'].includes(kind)) {
+    const colors = message.colors || {};
+    if (colors.body_bg) node.style.background = colors.body_bg;
+    else node.classList.add(tier(message));
+    if (colors.body_text) node.style.color = colors.body_text;
+  }
+  if (message.icon) node.append(image('avatar', message.icon, message.author));
+  const body = element('div', 'body');
+  body.append(element('span', 'author', message.author));
+  if (message.amount_text) body.append(element('span', 'amount', message.amount_text));
+  appendParts(body, message);
+  const translated = element('div', 'translation', translations.get(message.key) || '');
+  translated.lang = 'ja';
+  translated.hidden = !translations.has(message.key);
+  body.append(translated);
+  node.append(body);
+  return node;
+}
+
+function showTranslation(key, ja) {
+  translations.set(key, ja);
+  const line = shown.get(key)?.querySelector('.translation');
+  if (line) { line.textContent = ja; line.hidden = false; }
+}
+
+function clearTranslations() {
+  translations.clear();
+  for (const line of document.querySelectorAll('#comments .translation')) { line.textContent = ''; line.hidden = true; }
+}
+
+/** Shows a subtitle for the set duration; `ageMs` shortens it after a reconnect. */
+function showSubtitle(ja, en, ageMs = 0) {
+  clearTimeout(subtitleTimer);
+  const remaining = (look ? look.subtitles.duration : 10) * 1000 - ageMs;
+  const visible = Boolean(ja || en) && remaining > 0;
+  $('sub-ja').textContent = visible ? ja : '';
+  $('sub-en').textContent = visible ? en : '';
+  $('sub-box').hidden = !visible;
+  if (visible) subtitleTimer = setTimeout(() => showSubtitle('', ''), remaining);
+}
+
+function trimComments() {
+  const list = $('comments');
+  const max = look ? look.comments.max : 12;
+  while (list.children.length > max) {
+    shown.delete(list.firstElementChild.dataset.key);
+    list.firstElementChild.remove();
+  }
+}
+
+function addComment(message) {
+  if (shown.has(message.key)) return;
+  const node = renderComment(message);
+  $('comments').append(node);
+  shown.set(message.key, node);
+  trimComments();
+}
+
+// --- Niconico ------------------------------------------------------------------------
+
+function emojiOnly(message) {
+  const parts = message.parts || [];
+  const emoji = parts.filter(p => p.type === 'emoji').length;
+  return emoji > 0 && emoji <= 5 && parts.every(p => p.type === 'emoji' || (p.type === 'text' && !p.text.trim()));
+}
+
+function fly(content, key, { color, onDone } = {}) {
+  const area = { width: innerWidth, height: innerHeight, duration: look.niconico.duration };
+  const node = element('div', 'bullet');
+  if (color) node.style.color = color;
+  node.append(content);
+  $('niconico').append(node);
+  if (key) bullets.set(key, node);
+  const width = node.offsetWidth;
+  const top = Math.random() * Math.max(area.height - node.offsetHeight, 0);
+  node.style.top = `${top}px`;
+  const animation = node.animate(
+    [{ transform: `translateX(${area.width}px)` }, { transform: `translateX(${-width}px)` }],
+    { duration: area.duration * 1000, easing: 'linear' },
+  );
+  animation.onfinish = () => {
+    // Deleted bullets are gone already and must not trigger follow-ups.
+    if (!node.isConnected) return;
+    node.remove();
+    if (key) bullets.delete(key);
+    onDone?.();
+  };
+}
+
+function drop(content, key) {
+  const area = { width: innerWidth, height: innerHeight };
+  const node = element('div', 'bullet');
+  node.append(content);
+  $('niconico').append(node);
+  if (key) bullets.set(key, node);
+  node.style.left = `${Math.random() * Math.max(area.width - node.offsetWidth, 0)}px`;
+  const floor = area.height - node.offsetHeight;
+  const animation = node.animate(
+    [
+      { transform: `translateY(${-node.offsetHeight}px)`, opacity: 1 },
+      { transform: `translateY(${floor}px)`, opacity: 1, offset: 0.6, easing: 'ease-out' },
+      { transform: `translateY(${floor - 60}px)`, opacity: 1, offset: 0.75, easing: 'ease-in' },
+      { transform: `translateY(${floor}px)`, opacity: 1, offset: 0.9 },
+      { transform: `translateY(${floor}px)`, opacity: 0 },
+    ],
+    { duration: 2500 },
+  );
+  animation.onfinish = () => { node.remove(); if (key) bullets.delete(key); };
+}
+
+function addBullet(message) {
+  if (!look || PART !== 'niconico') return;
+  const content = element('span');
+  appendParts(content, message);
+  if (emojiOnly(message)) { drop(content, message.key); return; }
+  const small = (message.text || '').includes('小さい');
+  fly(content, message.key, small ? { onDone: () => fly(document.createTextNode('ちっちゃくないよ💢'), null, { color: '#ff0000' }) } : {});
+}
+
+// --- Participants and greetings -------------------------------------------------------
+
+function renderParticipants(items) {
+  const list = $('participants-list');
+  list.replaceChildren();
+  items.filter(p => p.status === 'waiting').forEach((p, index) => {
+    const item = element('li');
+    item.append(element('span', 'rank', `${index + 1}`));
+    if (p.icon) item.append(image('avatar', p.icon, p.author));
+    item.append(element('span', '', p.author));
+    list.append(item);
+  });
+}
+
+function renderOhayo(ohayo) {
+  $('ohayo-count').textContent = String(ohayo.count);
+}
+
+// --- Connection ----------------------------------------------------------------------
+
+function remove(keys) {
+  for (const key of keys) {
+    shown.get(key)?.remove();
+    shown.delete(key);
+    bullets.get(key)?.remove();
+    bullets.delete(key);
+  }
+}
+
+function clear() {
+  $('comments').replaceChildren();
+  $('niconico').replaceChildren();
+  shown.clear();
+  bullets.clear();
+  renderParticipants([]);
+  renderOhayo({ count: 0 });
+  translations.clear();
+  showSubtitle('', '');
+}
+
+let delay = 500;
+function connect() {
+  const socket = new WebSocket(`ws://${location.host}/overlay/ws`);
+  socket.onopen = () => { delay = 500; };
+  socket.onmessage = event => {
+    const data = JSON.parse(event.data);
+    if (data.type === 'snapshot') {
+      clear();
+      applyAppearance(data.appearance);
+      for (const [key, ja] of Object.entries(data.translations || {})) translations.set(key, ja);
+      if (PART === 'comments') data.messages.forEach(addComment);
+      if (data.subtitle) showSubtitle(data.subtitle.ja, data.subtitle.en, data.subtitle.age_ms);
+      renderParticipants(data.participants);
+      renderOhayo(data.ohayo);
+    } else if (data.type === 'message') { if (PART === 'comments') addComment(data); addBullet(data); }
+    else if (data.type === 'deleted') remove(data.keys);
+    else if (data.type === 'reset') clear();
+    else if (data.type === 'participants') renderParticipants(data.items);
+    else if (data.type === 'ohayo') renderOhayo(data);
+    else if (data.type === 'appearance') applyAppearance(data);
+    else if (data.type === 'subtitle') showSubtitle(data.ja, data.en);
+    else if (data.type === 'translation') showTranslation(data.key, data.ja);
+    else if (data.type === 'translations_cleared') clearTranslations();
+  };
+  // When the app is closed, show nothing and keep trying, so OBS never needs a refresh.
+  socket.onclose = () => {
+    clear();
+    setTimeout(connect, delay);
+    delay = Math.min(delay * 2, 5000);
+  };
+}
+connect();
+</script>
+</body>
+</html>

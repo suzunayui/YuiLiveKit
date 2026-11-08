@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>YuiLiveKit</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div id="statuses" aria-live="polite"></div>
+  </header>
+
+  <nav id="tabs" role="tablist" aria-orientation="vertical">
+    <button role="tab" data-tab="home" aria-selected="true">ホーム</button>
+    <button role="tab" data-tab="comments">コメント</button>
+    <button role="tab" data-tab="support">スパチャ・メンバー <span id="support-unread"></span></button>
+    <button role="tab" data-tab="participants">参加管理</button>
+    <button role="tab" data-tab="speech">読み上げ</button>
+    <button role="tab" data-tab="ai">AI返答</button>
+    <button role="tab" data-tab="emoji">絵文字</button>
+    <button role="tab" data-tab="media">字幕・翻訳</button>
+    <button role="tab" data-tab="look">見た目</button>
+    <button role="tab" data-tab="obs">OBS</button>
+  </nav>
+
+  <main>
+    <section data-panel="home">
+      <div class="card">
+        <h2>チャットの取得</h2>
+        <label>YouTube <input id="youtube" placeholder="@ハンドル / チャンネルID / 動画ID / YouTubeのURL" autocomplete="off" spellcheck="false"></label>
+        <label>Twitch <input id="twitch" placeholder="チャンネル名 / twitch.tvのURL" autocomplete="off" spellcheck="false"></label>
+        <div class="buttons">
+          <button id="start" class="primary">チャット取得開始</button>
+          <button id="stop">停止</button>
+        </div>
+        <p id="start-error" class="error" hidden></p>
+        <p id="server-error" class="error" hidden></p>
+      </div>
+
+      <div class="card">
+        <h2>おはようカウンター</h2>
+        <div class="counter">
+          <button id="ohayo-minus" aria-label="1減らす">−</button>
+          <strong id="ohayo-count">0</strong>
+          <button id="ohayo-plus" aria-label="1増やす">＋</button>
+          <button id="ohayo-reset">リセット</button>
+        </div>
+        <p class="hint">検出 <span id="ohayo-detected">0</span> 人、手動の調整 <span id="ohayo-adjustment">0</span></p>
+        <label>数えるキーワード（1行に1つ） <textarea id="ohayo-keywords" rows="3"></textarea></label>
+        <button id="ohayo-keywords-save">キーワードを保存</button>
+        <span id="ohayo-keywords-result" class="hint"></span>
+      </div>
+
+      <div class="card" id="legacy" hidden>
+        <h2>以前のコメント履歴</h2>
+        <p>以前の YuiLiveKit（YouTubeOverlay）の履歴を一度だけ取り込めます。初見の表示に使います。元のデータは変更しません。</p>
+        <select id="legacy-path"></select>
+        <button id="legacy-import">取り込む</button>
+        <p id="legacy-result"></p>
+      </div>
+    </section>
+
+    <section data-panel="comments" hidden>
+      <div class="card">
+        <h2>コメント <span id="comment-count"></span></h2>
+        <ol id="comments" class="list"></ol>
+      </div>
+    </section>
+
+    <section data-panel="support" hidden>
+      <div class="card">
+        <h2>スパチャ・メンバー</h2>
+        <div class="buttons">
+          <label class="inline"><input type="checkbox" id="support-unread-only"> 未読のみ</label>
+          <button id="support-read-all">全て既読</button>
+          <button id="support-copy">未読をコピー</button>
+          <span id="support-result" class="hint"></span>
+        </div>
+        <p class="hint">クリックで既読と未読を切り替えます。</p>
+        <ol id="support" class="list"></ol>
+      </div>
+    </section>
+
+    <section data-panel="participants" hidden>
+      <div class="card">
+        <h2>参加管理</h2>
+        <div class="buttons">
+          <label class="inline"><input type="checkbox" id="participants-hide-done"> 完了を隠す</label>
+          <button id="participants-clear-done">完了を消す</button>
+          <button id="participants-clear-all">全て消す</button>
+        </div>
+        <p class="hint">ドラッグで順番を変えられます。</p>
+        <ol id="participants" class="list"></ol>
+        <label>参加のキーワード <input id="participant-keyword"></label>
+        <button id="participant-keyword-save">保存</button>
+        <span id="participant-keyword-result" class="hint"></span>
+      </div>
+    </section>
+
+    <section data-panel="speech" hidden>
+      <div class="card">
+        <h2>読み上げ（VOICEVOX）</h2>
+        <p class="hint">VOICEVOX を起動しておくと、取得を始めた後のコメントを読み上げます。ブロックした人と NG ワードを含むコメントは読みません。</p>
+        <label class="inline"><input type="checkbox" id="speech-enabled"> 読み上げる</label>
+        <div class="grid">
+          <label>話者 <select id="speech-speaker"></select></label>
+          <label>速さ <input type="number" id="speech-speed" min="0.5" max="2" step="0.1"></label>
+          <label>音量 <input type="number" id="speech-volume" min="0" max="2" step="0.1"></label>
+          <label>待ちの上限 <input type="number" id="speech-max-queue" min="1" max="100"></label>
+        </div>
+        <label class="inline"><input type="checkbox" id="speech-read-name"> 名前も読む</label>
+        <label>置き換え（1行に「元=>読み」） <textarea id="speech-replacements" rows="3" placeholder="www=>わらわら"></textarea></label>
+        <label>NG ワード（含まれていたら読まない、1行に1つ） <textarea id="speech-ng" rows="3"></textarea></label>
+        <div class="buttons">
+          <button id="speech-save" class="primary">保存</button>
+          <button id="speech-reload-speakers">話者を読み込み直す</button>
+          <input id="speech-test-text" value="テストです。読み上げの声を確かめています。">
+          <button id="speech-test">試しに読む</button>
+        </div>
+        <p id="speech-result" class="hint"></p>
+      </div>
+      <div class="card">
+        <h2>名前の読み方とブロック</h2>
+        <p class="hint">コメント一覧の「読み方」「ブロック」から登録します。</p>
+        <ol id="viewer-list" class="list"></ol>
+      </div>
+    </section>
+
+    <section data-panel="ai" hidden>
+      <div class="card">
+        <h2>AI 返答（OpenAI）</h2>
+        <p class="hint">トリガーの言葉を含むコメントにだけ、OpenAI で返事を作って読み上げます。API キーを入れない限り、OpenAI へは通信しません。利用料金は OpenAI のアカウントにかかります。</p>
+        <label class="inline"><input type="checkbox" id="ai-enabled"> AI 返答を使う</label>
+        <label>API キー（Windows の資格情報マネージャーに保存し、画面には表示しません）
+          <input type="password" id="ai-key" autocomplete="off" placeholder="sk-..."></label>
+        <div class="buttons">
+          <button id="ai-key-save">キーを保存</button>
+          <button id="ai-key-delete">キーを削除</button>
+          <span id="ai-key-state" class="hint"></span>
+        </div>
+        <div class="grid">
+          <label>モデル <input id="ai-model"></label>
+          <label>話者 <select id="ai-speaker"></select></label>
+          <label>速さ <input type="number" id="ai-speed" min="0.5" max="2" step="0.1"></label>
+          <label>音量 <input type="number" id="ai-volume" min="0" max="2" step="0.1"></label>
+          <label>間隔（秒） <input type="number" id="ai-interval" min="5" max="600"></label>
+          <label>1時間あたりの上限 <input type="number" id="ai-hourly" min="1" max="600"></label>
+          <label>コメントの最大文字数 <input type="number" id="ai-max-chars" min="20" max="500"></label>
+        </div>
+        <label>トリガーの言葉（1行に1つ） <textarea id="ai-triggers" rows="3" placeholder="GPT&#10;教えて"></textarea></label>
+        <label>性格と口調 <textarea id="ai-persona" rows="3" placeholder="関西弁でフレンドリーに、短めに返事をする"></textarea></label>
+        <button id="ai-save" class="primary">保存</button>
+        <p id="ai-result" class="hint"></p>
+      </div>
+    </section>
+
+    <section data-panel="emoji" hidden>
+      <div class="card">
+        <h2>絵文字</h2>
+        <p class="hint">配信中に出た絵文字が並びます。読み方は読み上げに使い、効果音は絵文字を含むコメントで鳴らします（wav、mp3、ogg、m4a、10MB まで）。</p>
+        <ol id="emoji-list" class="list"></ol>
+        <p id="emoji-result" class="hint"></p>
+      </div>
+    </section>
+
+    <section data-panel="media" hidden>
+      <div class="card">
+        <h2>機能の導入</h2>
+        <p class="hint">必要なものは、押したときだけ取得します（アプリ専用の Python とライブラリ。システムには入れません）。初回の開始時にモデルも取得します。</p>
+        <div class="buttons">
+          <button id="install-speech">音声字幕を導入（約100MB）</button>
+          <button id="install-cuda">GPU 高速化を導入（約1.3GB）</button>
+          <button id="install-translation">コメント翻訳を導入</button>
+        </div>
+        <p id="runtime-status" class="hint" aria-live="polite"></p>
+      </div>
+      <div class="card">
+        <h2>音声字幕（日本語と英語）</h2>
+        <div class="grid">
+          <label>マイク <select id="sub-microphone"></select></label>
+          <label>認識に使うデバイス <select id="sub-device"></select></label>
+          <label>モデル <select id="sub-model">
+            <option value="large-v3">large-v3（精度重視）</option><option value="medium">medium</option>
+            <option value="small">small（速度重視）</option><option value="base">base</option></select></label>
+          <label>音声検出のしきい値 <input type="number" id="sub-threshold" min="0.3" max="0.8" step="0.05"></label>
+        </div>
+        <label class="inline"><input type="checkbox" id="sub-with-chat"> 「チャット取得開始」で字幕も一緒に開始する</label>
+        <label class="inline"><input type="checkbox" id="sub-mask"> 一部の語を伏字にする（fuck → f**k）</label>
+        <div class="buttons">
+          <button id="sub-save">設定を保存</button>
+          <button id="sub-start" class="primary">字幕開始</button>
+          <button id="sub-stop">字幕停止</button>
+          <button id="sub-reload">デバイスを読み込み直す</button>
+          <button id="sub-clear">字幕を消す</button>
+        </div>
+        <p id="sub-status" class="hint" aria-live="polite"></p>
+        <label>マイクの音量 <meter id="sub-level" min="0" max="1" value="0"></meter></label>
+        <p class="hint">最新の字幕: <span id="sub-latest"></span></p>
+        <p class="hint">録音や字幕は保存しません。字幕の見た目と位置は「配置」タブで変えられます。</p>
+      </div>
+      <div class="card">
+        <h2>外国語コメントの日本語訳</h2>
+        <p class="hint">TranslateGemma 12B をこの PC で動かします。新しいコメントだけを訳し、原文の下に表示します。初回のみ約7.3GBのモデルを取得します。</p>
+        <label class="inline"><input type="checkbox" id="tr-enabled"> 翻訳する</label>
+        <label>処理するデバイス <select id="tr-device"></select></label>
+        <button id="tr-save">保存</button>
+        <p id="tr-status" class="hint" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section data-panel="look" hidden>
+      <div class="card">
+        <h2>見た目</h2>
+        <p class="hint">部品ごとに OBS のソースが分かれています。位置、大きさ、重なり順（3D モデルの前か後ろかなど）は OBS で決めます。</p>
+        <div id="look-form"></div>
+        <div class="buttons">
+          <button id="look-save" class="primary">保存して OBS に反映</button>
+          <span id="look-result" class="hint"></span>
+        </div>
+      </div>
+    </section>
+
+    <section data-panel="obs" hidden>
+      <div class="card">
+        <h2>OBS プラグイン</h2>
+        <p>プラグインを入れると、OBS の起動時に今のシーンへ、部品ごとのソースを「YuiLiveKit」グループにまとめて追加します。追加はシーンコレクションごとに一度だけで、消したソースは戻しません。OBS の「ツール」メニューからは、今のシーンに無い部品を追加できます。</p>
+        <p>状態: <strong id="plugin-state">確認中…</strong></p>
+        <p class="hint" id="plugin-path"></p>
+        <button id="plugin-install" class="primary">OBS プラグインを導入</button>
+        <p id="plugin-result"></p>
+      </div>
+      <div class="card">
+        <h2>手動で追加する場合</h2>
+        <p>使う部品ごとに OBS にブラウザソースを追加し、URL、幅、高さを次のとおりにします。</p>
+        <table id="part-urls"><thead><tr><th>部品</th><th>URL</th><th>幅×高さ</th><th></th></tr></thead><tbody></tbody></table>
+        <span id="copy-result" class="hint"></span>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
