@@ -79,9 +79,18 @@
         </div>
         <p class="hint">ドラッグで順番を変えられます。</p>
         <ol id="participants" class="list"></ol>
-        <label>参加のキーワード <input id="participant-keyword"></label>
-        <button id="participant-keyword-save">保存</button>
-        <span id="participant-keyword-result" class="hint"></span>
+        <h3 class="sub">参加のキーワード</h3>
+        <p class="hint">どれか1つを含むコメントで、待ち一覧に並びます。</p>
+        <div id="participant-keywords" class="keyword-list"></div>
+        <button id="participant-keyword-add" class="keyword-add" type="button" aria-label="参加のキーワードを増やす">＋</button>
+        <h3 class="sub">辞退のキーワード</h3>
+        <p class="hint">待っている人がどれか1つを含むコメントをすると、待ち一覧から外れます。参加と辞退の両方を含むときは辞退になります。使わないときは空にします。</p>
+        <div id="withdraw-keywords" class="keyword-list"></div>
+        <button id="withdraw-keyword-add" class="keyword-add" type="button" aria-label="辞退のキーワードを増やす">＋</button>
+        <div class="buttons">
+          <button id="participant-keyword-save">保存</button>
+          <span id="participant-keyword-result" class="hint"></span>
+        </div>
       </div>
     </section>
 
@@ -95,26 +104,47 @@
           <button id="ohayo-reset">リセット</button>
         </div>
         <p class="hint">検出 <span id="ohayo-detected">0</span> 人、手動の調整 <span id="ohayo-adjustment">0</span></p>
-        <label>数えるキーワード（1行に1つ） <textarea id="ohayo-keywords" rows="3"></textarea></label>
-        <button id="ohayo-keywords-save">キーワードを保存</button>
-        <span id="ohayo-keywords-result" class="hint"></span>
+        <h3 class="sub">数えるキーワード</h3>
+        <p class="hint">どれか1つを含むコメントをした人を、1人1回だけ数えます。</p>
+        <div id="ohayo-keywords" class="keyword-list"></div>
+        <button id="ohayo-keyword-add" class="keyword-add" type="button" aria-label="おはようのキーワードを増やす">＋</button>
+        <div class="buttons">
+          <button id="ohayo-keywords-save">キーワードを保存</button>
+          <span id="ohayo-keywords-result" class="hint"></span>
+        </div>
       </div>
     </section>
 
     <section data-panel="speech" hidden>
       <div class="card">
-        <h2>読み上げ（VOICEVOX）</h2>
-        <p class="hint">VOICEVOX を起動しておくと、取得を始めた後のコメントを読み上げます。ブロックした人と NG ワードを含むコメントは読みません。</p>
+        <h2>VOICEVOX</h2>
+        <p>状態: <strong id="voicevox-state">確認中…</strong></p>
+        <p id="voicevox-status" class="hint"></p>
+        <div class="buttons">
+          <button id="voicevox-install" class="primary" hidden>VOICEVOX エンジンを導入（約 1.9 GB）</button>
+          <span id="voicevox-result" class="hint"></span>
+        </div>
+        <p class="hint">公式の CPU 版（0.26.1）を GitHub から取得し、改ざんがないか確かめてから入れます。ダウンロードは約 1.9 GB、導入後は約 2.2 GB を使います。VOICEVOX アプリを別に起動している場合は、そちらを使います。導入したエンジンは、読み上げか AI 返答を使うときに自動で起動し、アプリを閉じると止まります。声の利用は、それぞれの音声ライブラリの利用規約に従ってください（配信では「VOICEVOX:ずんだもん」のようなクレジットが必要です）。</p>
+      </div>
+      <div class="card">
+        <h2>読み上げ</h2>
+        <p class="hint">取得を始めた後のコメントを読み上げます。ブロックした人と NG ワードを含むコメントは読みません。</p>
         <label class="inline"><input type="checkbox" id="speech-enabled"> 読み上げる</label>
         <div class="grid">
-          <label>話者 <select id="speech-speaker"></select></label>
+          <label>話者 <button type="button" id="speech-speaker-pick" class="speaker-pick" data-target="speech-speaker"></button><input type="hidden" id="speech-speaker"></label>
           <label>速さ <input type="number" id="speech-speed" min="0.5" max="2" step="0.1"></label>
           <label>音量 <input type="number" id="speech-volume" min="0" max="2" step="0.1"></label>
           <label>待ちの上限 <input type="number" id="speech-max-queue" min="1" max="100"></label>
         </div>
         <label class="inline"><input type="checkbox" id="speech-read-name"> 名前も読む</label>
-        <label>置き換え（1行に「元=>読み」） <textarea id="speech-replacements" rows="3" placeholder="www=>わらわら"></textarea></label>
-        <label>NG ワード（含まれていたら読まない、1行に1つ） <textarea id="speech-ng" rows="3"></textarea></label>
+        <h3 class="sub">置き換え</h3>
+        <p class="hint">左の言葉を右の読みに変えて読みます。</p>
+        <div id="speech-replacements" class="keyword-list pairs"></div>
+        <button id="speech-replacement-add" class="keyword-add" type="button" aria-label="置き換えを増やす">＋</button>
+        <h3 class="sub">NG ワード</h3>
+        <p class="hint">どれか1つを含むコメントは読みません。</p>
+        <div id="speech-ng" class="keyword-list"></div>
+        <button id="speech-ng-add" class="keyword-add" type="button" aria-label="NG ワードを増やす">＋</button>
         <div class="buttons">
           <button id="speech-save" class="primary">保存</button>
           <button id="speech-reload-speakers">話者を読み込み直す</button>
@@ -125,7 +155,7 @@
       </div>
       <div class="card">
         <h2>名前の読み方とブロック</h2>
-        <p class="hint">コメント一覧の「読み方」「ブロック」から登録します。</p>
+        <p class="hint">コメント一覧の各行の読み方の欄と「ブロック」から登録します。</p>
         <ol id="viewer-list" class="list"></ol>
       </div>
     </section>
@@ -144,14 +174,17 @@
         </div>
         <div class="grid">
           <label>モデル <input id="ai-model"></label>
-          <label>話者 <select id="ai-speaker"></select></label>
+          <label>話者 <button type="button" id="ai-speaker-pick" class="speaker-pick" data-target="ai-speaker"></button><input type="hidden" id="ai-speaker"></label>
           <label>速さ <input type="number" id="ai-speed" min="0.5" max="2" step="0.1"></label>
           <label>音量 <input type="number" id="ai-volume" min="0" max="2" step="0.1"></label>
           <label>間隔（秒） <input type="number" id="ai-interval" min="5" max="600"></label>
           <label>1時間あたりの上限 <input type="number" id="ai-hourly" min="1" max="600"></label>
           <label>コメントの最大文字数 <input type="number" id="ai-max-chars" min="20" max="500"></label>
         </div>
-        <label>トリガーの言葉（1行に1つ） <textarea id="ai-triggers" rows="3" placeholder="GPT&#10;教えて"></textarea></label>
+        <h3 class="sub">トリガーの言葉</h3>
+        <p class="hint">どれか1つを含むコメントに返事をします（大文字と小文字は区別しません）。</p>
+        <div id="ai-triggers" class="keyword-list"></div>
+        <button id="ai-trigger-add" class="keyword-add" type="button" aria-label="トリガーの言葉を増やす">＋</button>
         <label>性格と口調 <textarea id="ai-persona" rows="3" placeholder="関西弁でフレンドリーに、短めに返事をする"></textarea></label>
         <button id="ai-save" class="primary">保存</button>
         <p id="ai-result" class="hint"></p>
@@ -243,6 +276,17 @@
       </div>
     </section>
   </main>
+
+  <dialog id="speaker-dialog" aria-labelledby="speaker-dialog-title">
+    <div class="dialog-head">
+      <h2 id="speaker-dialog-title">話者を選ぶ</h2>
+      <input id="speaker-search" type="search" placeholder="名前で探す" autocomplete="off">
+      <button type="button" id="speaker-dialog-close" aria-label="閉じる">×</button>
+    </div>
+    <p class="hint">スタイルを押すと選びます。▶ で声を試せます。</p>
+    <p id="speaker-dialog-empty" class="hint" hidden></p>
+    <div id="speaker-groups"></div>
+  </dialog>
 
   <script type="module" src="main.js"></script>
 </body>

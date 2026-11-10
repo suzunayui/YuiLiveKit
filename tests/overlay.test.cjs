@@ -79,6 +79,17 @@ test('the overlay follows chat, deletions, new collections and app restarts', as
     await demo.send({ op: 'message', id: 'now', author: 'Now', author_id: 'UC5', text: 'new stream' });
     await page.waitForFunction(() => document.querySelectorAll('#comments .msg').length === 1);
 
+    // Starting again on the same stream: the overlay does not show its comments a second time,
+    // not even after OBS reloads the page.
+    await demo.send({ op: 'start', stream: 'v2' });
+    await page.waitForFunction(() => document.querySelectorAll('#comments .msg').length === 0);
+    await demo.send({ op: 'message', id: 'now', author: 'Now', author_id: 'UC5', text: 'new stream' });
+    await demo.send({ op: 'message', id: 'again', author: 'Now', author_id: 'UC5', text: 'after the second start' });
+    await page.waitForFunction(() => document.querySelectorAll('#comments .msg').length === 1);
+    await page.reload();
+    await page.waitForFunction(() => document.querySelectorAll('#comments .msg').length === 1);
+    assert.deepEqual(await keys(page), ['youtube:again']);
+
     await demo.stop();
     await page.waitForFunction(() => document.querySelectorAll('#comments .msg').length === 0);
     demo = startDemo();

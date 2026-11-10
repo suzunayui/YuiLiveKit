@@ -12,6 +12,7 @@ pub mod subtitles;
 pub mod translation;
 pub mod tools;
 pub mod twitch;
+pub mod voicevox;
 pub mod worker;
 pub mod youtube;
 

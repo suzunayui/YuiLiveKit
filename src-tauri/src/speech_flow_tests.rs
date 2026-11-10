@@ -40,7 +40,19 @@ async fn fake_servers(reply: &'static str) -> Fakes {
     let openai_requests = Arc::new(Mutex::new(Vec::new()));
     let seen = openai_requests.clone();
     let app = Router::new()
-        .route("/speakers", get(|| async { Json(json!([{"name": "四国めたん", "styles": [{"name": "ノーマル", "id": 2}]}])) }))
+        .route("/speakers", get(|| async { Json(json!([{"name": "四国めたん", "speaker_uuid": "u-metan", "styles": [{"name": "ノーマル", "id": 2}]}])) }))
+        .route(
+            "/speaker_info",
+            get(|axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>, headers: axum::http::HeaderMap| async move {
+                let host = headers.get("host").and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
+                assert_eq!(query.get("resource_format").map(String::as_str), Some("url"));
+                Json(json!({"style_infos": [
+                    {"id": 2, "icon": format!("http://{host}/_resources/icon-2")},
+                    // Never handed to the window: not on the VOICEVOX that answered.
+                    {"id": 9, "icon": "https://evil.example/icon.png"}
+                ]}))
+            }),
+        )
         .route(
             "/audio_query",
             post(|Query(q): Query<std::collections::HashMap<String, String>>| async move {
@@ -201,6 +213,10 @@ async fn voicevox_errors_are_reported_and_speakers_are_listed() {
     let (core, _recorder, _fakes, _stream) = setup("", 0).await;
     let speakers = core.voicevox_speakers().await.unwrap();
     assert_eq!((speakers[0].id, speakers[0].name.as_str()), (2, "四国めたん（ノーマル）"));
+    assert_eq!((speakers[0].character.as_str(), speakers[0].style.as_str()), ("四国めたん", "ノーマル"));
+    let icons = core.voicevox_icons().await.unwrap();
+    assert_eq!(icons.len(), 1, "{icons:?}");
+    assert!(icons[&2].ends_with("/_resources/icon-2"));
 
     let broken = Core::with_backends(
         Db::open_in_memory().unwrap(),

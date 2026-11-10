@@ -326,7 +326,14 @@ impl Queue {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Speaker {
     pub id: u32,
+    /// "四国めたん（ノーマル）"
     pub name: String,
+    /// "四国めたん", so the picker can group the styles of one character.
+    pub character: String,
+    /// "ノーマル"
+    pub style: String,
+    /// The character's id in VOICEVOX, for its icons.
+    pub uuid: String,
 }
 
 pub fn http() -> reqwest::Client {
@@ -349,11 +356,48 @@ pub async fn voicevox_speakers(client: &reqwest::Client, base: &str) -> Result<V
         .flatten()
         .flat_map(|speaker| {
             let name = speaker["name"].as_str().unwrap_or("").to_string();
+            let uuid = speaker["speaker_uuid"].as_str().unwrap_or("").to_string();
             speaker["styles"].as_array().cloned().unwrap_or_default().into_iter().filter_map(move |style| {
-                Some(Speaker { id: style["id"].as_u64()? as u32, name: format!("{}（{}）", name, style["name"].as_str().unwrap_or("")) })
+                let style_name = style["name"].as_str().unwrap_or("").to_string();
+                Some(Speaker {
+                    id: style["id"].as_u64()? as u32,
+                    name: format!("{name}（{style_name}）"),
+                    character: name.clone(),
+                    style: style_name,
+                    uuid: uuid.clone(),
+                })
             })
         })
         .collect())
+}
+
+/// The icon of each style, as addresses VOICEVOX serves itself (`<base>/_resources/...`), so
+/// the settings window loads them straight from VOICEVOX. Characters whose information cannot
+/// be read (older engines answer only in base64) simply have no icon.
+pub async fn voicevox_icons(client: &reqwest::Client, base: &str, uuids: &[String]) -> std::collections::BTreeMap<u32, String> {
+    let resources = format!("{base}/_resources/");
+    let requests = uuids.iter().map(|uuid| {
+        let request = client
+            .get(format!("{base}/speaker_info"))
+            .query(&[("speaker_uuid", uuid.as_str()), ("resource_format", "url")])
+            .timeout(Duration::from_secs(10))
+            .send();
+        async move {
+            let info: Value = request.await.ok()?.error_for_status().ok()?.json().await.ok()?;
+            Some(info["style_infos"].as_array()?.clone())
+        }
+    });
+    let mut icons = std::collections::BTreeMap::new();
+    for styles in futures_util::future::join_all(requests).await.into_iter().flatten() {
+        for style in styles {
+            let (Some(id), Some(icon)) = (style["id"].as_u64(), style["icon"].as_str()) else { continue };
+            // Only addresses on the VOICEVOX it asked; the window allows images from there alone.
+            if icon.starts_with(&resources) {
+                icons.insert(id as u32, icon.to_string());
+            }
+        }
+    }
+    icons
 }
 
 pub async fn voicevox_synthesize(client: &reqwest::Client, base: &str, text: &str, voice: &Voice) -> Result<Vec<u8>, String> {

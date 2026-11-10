@@ -11,9 +11,42 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
-struct Asset {
-    url: &'static str,
-    sha256: &'static str,
+pub(crate) struct Asset {
+    pub url: &'static str,
+    pub sha256: &'static str,
+}
+
+/// Downloads `url` to `target`, reporting the bytes so far about once a second, and keeps the
+/// file only if its SHA-256 is `sha256`.
+pub(crate) async fn download_checked(url: &str, sha256: &str, target: &Path, progress: impl Fn(usize)) -> Result<(), String> {
+    use futures_util::StreamExt;
+    let response = reqwest::get(url).await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("ダウンロードに失敗しました ({})", response.status()));
+    }
+    let mut file = tokio::fs::File::create(target).await.map_err(|e| e.to_string())?;
+    let mut hash = Sha256::new();
+    let mut size = 0usize;
+    let mut last = std::time::Instant::now();
+    let mut body = response.bytes_stream();
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        hash.update(&chunk);
+        size += chunk.len();
+        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        if last.elapsed().as_millis() > 700 {
+            last = std::time::Instant::now();
+            progress(size);
+        }
+    }
+    file.flush().await.map_err(|e| e.to_string())?;
+    drop(file);
+    let digest: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    if digest != sha256 {
+        let _ = tokio::fs::remove_file(target).await;
+        return Err("ダウンロードの検証に失敗しました。もう一度導入してください".into());
+    }
+    Ok(())
 }
 
 const PYTHON: Asset = Asset {
@@ -200,33 +233,11 @@ impl Runtime {
     }
 
     async fn download(&self, asset: &Asset, name: &str) -> Result<PathBuf, String> {
-        use futures_util::StreamExt;
         let target = self.paths.root.join(name);
-        let response = reqwest::get(asset.url).await.map_err(|e| e.to_string())?;
-        if !response.status().is_success() {
-            return Err(format!("ダウンロードに失敗しました ({})", response.status()));
-        }
-        let mut file = tokio::fs::File::create(&target).await.map_err(|e| e.to_string())?;
-        let mut hash = Sha256::new();
-        let mut size = 0usize;
-        let mut last = std::time::Instant::now();
-        let mut body = response.bytes_stream();
-        while let Some(chunk) = body.next().await {
-            let chunk = chunk.map_err(|e| e.to_string())?;
-            hash.update(&chunk);
-            size += chunk.len();
-            file.write_all(&chunk).await.map_err(|e| e.to_string())?;
-            if last.elapsed().as_millis() > 700 {
-                last = std::time::Instant::now();
-                self.status(format!("{name} を取得中: {:.1} MB", size as f64 / 1_048_576.0));
-            }
-        }
-        file.flush().await.map_err(|e| e.to_string())?;
-        let digest: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
-        if digest != asset.sha256 {
-            let _ = tokio::fs::remove_file(&target).await;
-            return Err("ダウンロードの検証に失敗しました。もう一度導入してください".into());
-        }
+        download_checked(asset.url, asset.sha256, &target, |size| {
+            self.status(format!("{name} を取得中: {:.1} MB", size as f64 / 1_048_576.0))
+        })
+        .await?;
         Ok(target)
     }
 

@@ -349,6 +349,11 @@ impl Db {
         Ok(ids.iter().map(|id| message_key(platform, id)).collect())
     }
 
+    /// The newest message row, so a start can tell what was stored before it.
+    pub fn last_message_row(&self) -> Result<i64> {
+        self.conn.query_row("SELECT COALESCE(MAX(id), 0) FROM messages", [], |r| r.get(0)).map_err(err)
+    }
+
     /// Newest messages of the given streams, oldest first, without deleted ones.
     pub fn recent(&self, stream_ids: &[i64], limit: usize) -> Result<Vec<Shown>> {
         self.select_shown(stream_ids, "", limit)

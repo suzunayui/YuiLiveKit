@@ -94,6 +94,14 @@ function selectTab(name) {
   for (const panel of document.querySelectorAll('[data-panel]')) panel.hidden = panel.dataset.panel !== name;
   remember('tab', name);
   if (name === 'obs') refreshPlugin();
+  if ((name === 'speech' || name === 'ai') && !speakersLoaded) loadSpeakersNow();
+}
+
+let speakersLoaded = false;
+async function loadSpeakersNow() {
+  speakersLoaded = true;
+  const voice = await invoke('get_voice_state');
+  await loadSpeakers(voice.speech, voice.ai);
 }
 for (const tab of tabButtons()) tab.addEventListener('click', () => selectTab(tab.dataset.tab));
 
@@ -191,17 +199,25 @@ function viewerKey(message) {
 function viewerActions(message) {
   const key = viewerKey(message);
   const actions = element('span', 'actions');
+  // Typed straight into the row, like YuiAIAssistant's alias box. Saved when the box loses
+  // focus or on Enter; Escape puts back what was saved.
+  const reading = element('input', 'reading');
+  reading.placeholder = '読み方';
+  reading.title = `${message.author} さんの名前の読み方（読み上げで使います。空にすると元の名前で読みます）`;
+  reading.value = viewers.names[key] || '';
+  reading.addEventListener('keydown', event => {
+    if (event.key === 'Enter') reading.blur();
+    else if (event.key === 'Escape') { reading.value = viewers.names[key] || ''; reading.blur(); }
+  });
+  reading.addEventListener('change', async () => {
+    viewers = await invoke('set_viewer_name', { viewer: key, reading: reading.value.trim() });
+    renderViewers();
+  });
   actions.append(
-    button('読み方', async () => {
-      const reading = prompt(`${message.author} さんの名前の読み方（空にすると元に戻します）`, viewers.names[key] || '');
-      if (reading === null) return;
-      viewers = await invoke('set_viewer_name', { viewer: key, reading });
-      renderViewers();
-    }),
+    reading,
     button(viewers.blocked.includes(key) ? 'ブロック解除' : 'ブロック', async () => {
       viewers = await invoke('set_blocked', { viewer: key, blocked: !viewers.blocked.includes(key) });
       renderViewers();
-      for (const node of document.querySelectorAll('#comments li')) refreshViewerButton(node);
     }),
   );
   actions.dataset.viewer = key;
@@ -212,6 +228,9 @@ function refreshViewerButton(item) {
   const actions = item.querySelector('.actions[data-viewer]');
   if (!actions) return;
   actions.lastElementChild.textContent = viewers.blocked.includes(actions.dataset.viewer) ? 'ブロック解除' : 'ブロック';
+  // Every row from the same viewer shows the same reading, except the box being typed in.
+  const reading = actions.querySelector('input.reading');
+  if (reading && reading !== document.activeElement) reading.value = viewers.names[actions.dataset.viewer] || '';
 }
 
 function addMessage(message) {
@@ -222,10 +241,29 @@ function addMessage(message) {
   list.append(item);
   items.set(message.key, item);
   while (list.children.length > MAX_ITEMS) {
+    // A reading being typed into the oldest row must not vanish under the user.
+    if (list.firstElementChild.contains(document.activeElement)) break;
     items.delete(list.firstElementChild.dataset.key);
     list.firstElementChild.remove();
   }
   if (stick) list.scrollTop = list.scrollHeight;
+  $('comment-count').textContent = `（${items.size}）`;
+}
+
+/** Stored chat of a stream collected before, put back above anything that arrived since. */
+function restoreMessages(messages) {
+  const list = $('comments');
+  const nodes = messages.filter(m => !items.has(m.key)).map(m => {
+    const item = renderItem(m);
+    items.set(m.key, item);
+    return item;
+  });
+  list.prepend(...nodes);
+  while (list.children.length > MAX_ITEMS && !list.firstElementChild.contains(document.activeElement)) {
+    items.delete(list.firstElementChild.dataset.key);
+    list.firstElementChild.remove();
+  }
+  list.scrollTop = list.scrollHeight;
   $('comment-count').textContent = `（${items.size}）`;
 }
 
@@ -289,21 +327,72 @@ $('ohayo-plus').addEventListener('click', async () => renderOhayo(await invoke('
 $('ohayo-minus').addEventListener('click', async () => renderOhayo(await invoke('adjust_ohayo', { delta: -1 })));
 $('ohayo-reset').addEventListener('click', async () => renderOhayo(await invoke('reset_ohayo')));
 
-function keywordLines(text) {
-  return text.split(/\r?\n|,|、/).map(s => s.trim()).filter(Boolean);
+
+/** One row per keyword: a box and a − button. The last row stays, so there is always a box. */
+function addKeywordRow(listId, value = '', pair = null) {
+  const list = $(listId);
+  const row = element('div', 'keyword-row');
+  const input = element('input');
+  input.value = value;
+  input.setAttribute('aria-label', pair ? '元の言葉' : 'キーワード');
+  if (pair) input.placeholder = '元の言葉（例: www）';
+  row.append(input);
+  if (pair) {
+    const reading = element('input', 'reading-of');
+    reading.value = pair.to ?? '';
+    reading.placeholder = '読み（例: わらわら）';
+    reading.setAttribute('aria-label', '読み');
+    row.append(element('span', 'arrow', '→'), reading);
+  }
+  const remove = element('button', '', '−');
+  remove.type = 'button';
+  remove.setAttribute('aria-label', 'このキーワードを消す');
+  remove.addEventListener('click', () => {
+    row.remove();
+    refreshKeywordRows(listId);
+  });
+  row.append(remove);
+  list.append(row);
+  refreshKeywordRows(listId);
+  return input;
 }
+function refreshKeywordRows(listId) {
+  const rows = [...$(listId).children];
+  if (!rows.length) { addKeywordRow(listId, '', $(listId).classList.contains('pairs') ? {} : null); return; }
+  for (const row of rows) row.querySelector('button').disabled = rows.length === 1;
+}
+function keywordValues(listId) {
+  return [...$(listId).querySelectorAll('input')].map(input => input.value.trim()).filter(Boolean);
+}
+/** Replacement rows: rows without the word on the left are left out. */
+function pairValues(listId) {
+  return [...$(listId).children].map(row => {
+    const [from, to] = row.querySelectorAll('input');
+    return { from: from.value.trim(), to: to.value.trim() };
+  }).filter(pair => pair.from);
+}
+function renderKeywordRows(listId, keywords) {
+  $(listId).replaceChildren();
+  for (const keyword of keywords) addKeywordRow(listId, keyword);
+  refreshKeywordRows(listId);
+}
+$('participant-keyword-add').addEventListener('click', () => addKeywordRow('participant-keywords').focus());
+$('withdraw-keyword-add').addEventListener('click', () => addKeywordRow('withdraw-keywords').focus());
 
 async function saveToolSettings(resultId) {
   const saved = await attempt(resultId, () => invoke('set_tool_settings', {
-    participantKeyword: $('participant-keyword').value,
-    ohayoKeywords: keywordLines($('ohayo-keywords').value),
+    participantKeywords: keywordValues('participant-keywords'),
+    withdrawKeywords: keywordValues('withdraw-keywords'),
+    ohayoKeywords: keywordValues('ohayo-keywords'),
   }), '保存しました');
   if (saved) renderToolSettings(saved);
 }
 function renderToolSettings(settings) {
-  $('participant-keyword').value = settings.participant_keyword;
-  $('ohayo-keywords').value = settings.ohayo_keywords.join('\n');
+  renderKeywordRows('participant-keywords', settings.participant_keywords);
+  renderKeywordRows('withdraw-keywords', settings.withdraw_keywords);
+  renderKeywordRows('ohayo-keywords', settings.ohayo_keywords);
 }
+$('ohayo-keyword-add').addEventListener('click', () => addKeywordRow('ohayo-keywords').focus());
 $('ohayo-keywords-save').addEventListener('click', () => saveToolSettings('ohayo-keywords-result'));
 $('participant-keyword-save').addEventListener('click', () => saveToolSettings('participant-keyword-result'));
 
@@ -492,17 +581,104 @@ $('legacy-import').addEventListener('click', async () => {
 
 // --- Reading aloud ---------------------------------------------------------------------
 
-function fillSpeakers(select, selectedId) {
-  select.replaceChildren(...speakers.map(s => { const o = element('option', '', s.name); o.value = s.id; return o; }));
-  if (!speakers.some(s => s.id === selectedId)) {
-    const o = element('option', '', `話者 ${selectedId}（VOICEVOX 未接続）`);
-    o.value = selectedId;
-    select.append(o);
-  }
-  select.value = String(selectedId);
+/** The chosen speaker is kept in a hidden box; its button shows the name and opens the picker. */
+function fillSpeakers(input, selectedId) {
+  input.value = String(selectedId);
+  const speaker = speakers.find(s => s.id === Number(selectedId));
+  $(`${input.id}-pick`).textContent = speaker ? speaker.name : `話者 ${selectedId}（VOICEVOX 未接続）`;
 }
 
+function characterOf(speaker) {
+  return speaker.character || speaker.name.replace(/（.*）$/, '');
+}
+function styleOf(speaker) {
+  return speaker.style || (speaker.name.match(/（(.*)）$/) || [])[1] || speaker.name;
+}
+
+let speakerTarget = null;
+// Style id to icon address; read from VOICEVOX the first time the picker opens.
+let speakerIcons = null;
+async function loadSpeakerIcons() {
+  if (speakerIcons || !speakers.length) return;
+  try {
+    speakerIcons = await invoke('voicevox_icons');
+  } catch {
+    return;
+  }
+  if ($('speaker-dialog').open) renderSpeakerGroups();
+}
+function renderSpeakerGroups() {
+  const query = $('speaker-search').value.trim().toLowerCase();
+  const current = Number($(speakerTarget).value);
+  const groups = new Map();
+  for (const speaker of speakers) {
+    if (query && !speaker.name.toLowerCase().includes(query)) continue;
+    const name = characterOf(speaker);
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(speaker);
+  }
+  $('speaker-groups').replaceChildren(...[...groups].map(([name, styles]) => {
+    const group = element('section', 'speaker-group');
+    group.append(element('h3', '', name));
+    const chips = element('div', 'speaker-styles');
+    for (const speaker of styles) {
+      const chip = element('span', 'speaker-chip');
+      chip.classList.toggle('selected', speaker.id === current);
+      const choose = element('button', 'speaker-choose');
+      choose.type = 'button';
+      const icon = speakerIcons?.[speaker.id];
+      if (icon) {
+        const img = element('img', 'speaker-icon');
+        img.src = icon;
+        img.alt = '';
+        img.loading = 'lazy';
+        choose.append(img);
+      }
+      choose.append(element('span', 'speaker-style', styleOf(speaker)));
+      choose.dataset.id = speaker.id;
+      choose.addEventListener('click', () => {
+        fillSpeakers($(speakerTarget), speaker.id);
+        $('speaker-dialog').close();
+      });
+      const listen = element('button', 'speaker-listen', '▶');
+      listen.type = 'button';
+      listen.title = `${speaker.name} の声を試す`;
+      listen.setAttribute('aria-label', listen.title);
+      const prefix = speakerTarget.replace(/-speaker$/, '');
+      listen.addEventListener('click', () => invoke('speak_test', {
+        text: `${characterOf(speaker)}、${styleOf(speaker)}の声です。`,
+        voice: { ...voiceOf(prefix), speaker: speaker.id },
+      }));
+      chip.append(choose, listen);
+      chips.append(chip);
+    }
+    group.append(chips);
+    return group;
+  }));
+  const empty = $('speaker-dialog-empty');
+  empty.hidden = groups.size > 0;
+  empty.textContent = speakers.length ? '見つかりません' : `話者を読み込めませんでした。${$('speech-result').textContent}`;
+}
+
+for (const pick of document.querySelectorAll('.speaker-pick')) {
+  pick.addEventListener('click', async () => {
+    speakerTarget = pick.dataset.target;
+    if (!speakers.length) await loadSpeakersNow();
+    $('speaker-search').value = '';
+    renderSpeakerGroups();
+    $('speaker-dialog').showModal();
+    loadSpeakerIcons();
+    $('speaker-dialog').querySelector('.speaker-chip.selected .speaker-choose')?.scrollIntoView({ block: 'center' });
+    $('speaker-search').focus();
+  });
+}
+$('speaker-search').addEventListener('input', renderSpeakerGroups);
+$('speaker-dialog-close').addEventListener('click', () => $('speaker-dialog').close());
+// A click on the dimmed backdrop (outside the box) closes it too.
+$('speaker-dialog').addEventListener('click', event => { if (event.target === $('speaker-dialog')) $('speaker-dialog').close(); });
+
 async function loadSpeakers(settings, ai) {
+  speakersLoaded = true;
   try {
     speakers = await invoke('voicevox_speakers');
     $('speech-result').textContent = `VOICEVOX に接続しました（話者 ${speakers.length}）`;
@@ -526,19 +702,36 @@ function renderSpeech(settings) {
   $('speech-volume').value = settings.voice.volume;
   $('speech-max-queue').value = settings.max_queue;
   $('speech-read-name').checked = settings.read_name;
-  $('speech-replacements').value = settings.replacements.map(r => `${r.from}=>${r.to}`).join('\n');
-  $('speech-ng').value = settings.ng_words.join('\n');
+  $('speech-replacements').replaceChildren();
+  for (const pair of settings.replacements) addKeywordRow('speech-replacements', pair.from, pair);
+  refreshKeywordRows('speech-replacements');
+  renderKeywordRows('speech-ng', settings.ng_words);
 }
+$('speech-replacement-add').addEventListener('click', () => addKeywordRow('speech-replacements', '', {}).focus());
+$('speech-ng-add').addEventListener('click', () => addKeywordRow('speech-ng').focus());
 
-function readReplacements(text) {
-  return text.split(/\r?\n/).map(line => line.split(/=>|＝>/)).filter(p => p.length >= 2 && p[0].trim())
-    .map(([from, ...to]) => ({ from: from.trim(), to: to.join('=>').trim() }));
+// --- VOICEVOX engine -------------------------------------------------------------------
+
+function renderVoicevox(state) {
+  $('voicevox-state').textContent = state.busy ? '導入中'
+    : state.running ? '接続しています'
+    : state.installed ? '導入済み（使うときに起動します）'
+    : '未導入（VOICEVOX も起動していません）';
+  $('voicevox-status').textContent = state.status || '';
+  $('voicevox-install').hidden = state.installed || (state.running && !state.busy);
+  $('voicevox-install').disabled = state.busy;
 }
+$('voicevox-install').addEventListener('click', () => attempt('voicevox-result', async () => {
+  $('voicevox-result').textContent = '';
+  await invoke('install_voicevox');
+  const voice = await invoke('get_voice_state');
+  await loadSpeakers(voice.speech, voice.ai);
+}, ''));
 
 $('speech-save').addEventListener('click', () => attempt('speech-result', async () => {
   renderSpeech(await invoke('set_speech_settings', { settings: {
     enabled: $('speech-enabled').checked, voice: voiceOf('speech'), read_name: $('speech-read-name').checked,
-    replacements: readReplacements($('speech-replacements').value), ng_words: keywordLines($('speech-ng').value),
+    replacements: pairValues('speech-replacements'), ng_words: keywordValues('speech-ng'),
     max_queue: Number($('speech-max-queue').value),
   } }));
 }, '保存しました'));
@@ -563,6 +756,7 @@ function renderViewers() {
     item.append(actions);
     list.append(item);
   }
+  for (const node of document.querySelectorAll('#comments li')) refreshViewerButton(node);
 }
 
 // --- AI replies ------------------------------------------------------------------------
@@ -575,9 +769,10 @@ function renderAi(settings) {
   $('ai-interval').value = settings.interval_seconds;
   $('ai-hourly').value = settings.hourly_limit;
   $('ai-max-chars').value = settings.max_comment_chars;
-  $('ai-triggers').value = settings.triggers.join('\n');
+  renderKeywordRows('ai-triggers', settings.triggers);
   $('ai-persona').value = settings.persona;
 }
+$('ai-trigger-add').addEventListener('click', () => addKeywordRow('ai-triggers').focus());
 
 function renderKeyState(hasKey) {
   $('ai-key-state').textContent = hasKey ? 'キーは保存されています' : 'キーは未設定です';
@@ -586,7 +781,7 @@ function renderKeyState(hasKey) {
 $('ai-save').addEventListener('click', () => attempt('ai-result', async () => {
   renderAi(await invoke('set_ai_settings', { settings: {
     enabled: $('ai-enabled').checked, model: $('ai-model').value, persona: $('ai-persona').value,
-    triggers: keywordLines($('ai-triggers').value), voice: voiceOf('ai'), interval_seconds: Number($('ai-interval').value),
+    triggers: keywordValues('ai-triggers'), voice: voiceOf('ai'), interval_seconds: Number($('ai-interval').value),
     hourly_limit: Number($('ai-hourly').value), max_comment_chars: Number($('ai-max-chars').value),
   } }));
 }, '保存しました'));
@@ -722,6 +917,10 @@ await listen('chat', ({ payload }) => {
   if (payload.type === 'message') {
     addMessage(payload);
     if (SUPPORT_KINDS.includes(payload.kind)) { support.push({ ...payload, read: false }); renderSupport(); }
+  } else if (payload.type === 'restored') {
+    restoreMessages(payload.messages);
+    support = payload.support;
+    renderSupport();
   } else if (payload.type === 'deleted') removeMessages(payload.keys);
   else if (payload.type === 'reset') clearMessages();
   else if (payload.type === 'status') {
@@ -739,6 +938,7 @@ await listen('chat', ({ payload }) => {
     translationsByKey.clear();
     for (const line of document.querySelectorAll('#comments .translation')) { line.textContent = ''; line.hidden = true; }
   } else if (payload.type === 'runtime') renderRuntime(payload);
+  else if (payload.type === 'voicevox') renderVoicevox(payload);
 });
 await listen('server-error', ({ payload }) => showError('server-error', payload));
 
@@ -768,6 +968,9 @@ renderKeyState(voice.has_api_key);
 renderViewers();
 renderEmoji(voice.emoji);
 for (const node of document.querySelectorAll('#comments li')) refreshViewerButton(node);
-loadSpeakers(voice.speech, voice.ai);
+// Reading needs VOICEVOX right away only when it is turned on; otherwise wait for the tab.
+if (voice.speech.enabled || voice.ai.enabled) loadSpeakers(voice.speech, voice.ai);
+else { fillSpeakers($('speech-speaker'), voice.speech.voice.speaker); fillSpeakers($('ai-speaker'), voice.ai.voice.speaker); }
+invoke('voicevox_state').then(renderVoicevox, () => {});
 await loadMedia();
 selectTab(recall('tab') || 'comments');

@@ -70,7 +70,9 @@ const fakeTauri = ({ state }) => {
           case 'reorder_participants': return participants;
           case 'adjust_ohayo': ohayo = { ...ohayo, adjustment: ohayo.adjustment + args.delta, count: Math.max(0, ohayo.count + args.delta) }; return ohayo;
           case 'reset_ohayo': ohayo = { detected: 0, adjustment: 0, count: 0 }; return ohayo;
-          case 'set_tool_settings': return { participant_keyword: args.participantKeyword, ohayo_keywords: args.ohayoKeywords };
+          case 'set_tool_settings':
+            if (!args.participantKeywords.length) throw '参加のキーワードを1つ以上入力してください';
+            return { participant_keywords: args.participantKeywords, withdraw_keywords: args.withdrawKeywords, ohayo_keywords: args.ohayoKeywords };
           case 'save_appearance': {
             // Like the app: values are kept in range.
             const saved = structuredClone(args.appearance);
@@ -85,7 +87,14 @@ const fakeTauri = ({ state }) => {
           case 'set_translation_settings': state.media.translation_settings = args.settings; return args.settings;
           case 'start_subtitles': return null;
           case 'install_feature': return null;
-          case 'voicevox_speakers': return [{ id: 2, name: '四国めたん（ノーマル）' }, { id: 3, name: 'ずんだもん（ノーマル）' }];
+          case 'voicevox_speakers': return [
+            { id: 2, name: '四国めたん（ノーマル）', character: '四国めたん', style: 'ノーマル' },
+            { id: 0, name: '四国めたん（あまあま）', character: '四国めたん', style: 'あまあま' },
+            { id: 3, name: 'ずんだもん（ノーマル）', character: 'ずんだもん', style: 'ノーマル' },
+          ];
+          case 'voicevox_state': return { installed: false, running: false, busy: false, status: '' };
+          case 'voicevox_icons': return { 2: 'data:image/png;base64,iVBORw0KGgo=' };
+          case 'install_voicevox': return null;
           case 'set_speech_settings': voice = { ...voice, speech: args.settings }; return args.settings;
           case 'set_ai_settings': voice = { ...voice, ai: args.settings }; return args.settings;
           case 'set_api_key': voice = { ...voice, has_api_key: Boolean(args.key) }; return voice.has_api_key;
@@ -138,7 +147,7 @@ function baseState(extra = {}) {
       { ...message('youtube:11', { kind: 'paid', amount_text: '¥1,000', author: 'Fan', text: 'thanks' }), read: false },
       { ...message('youtube:12', { kind: 'membership', author: 'Member', text: 'joined' }), read: true },
     ],
-    tool_settings: { participant_keyword: '参加希望', ohayo_keywords: ['おはよ', 'おっは'] },
+    tool_settings: { participant_keywords: ['参加希望'], withdraw_keywords: ['辞退'], ohayo_keywords: ['おはよ', 'おっは'] },
     appearance: defaultAppearance,
     legacy_imported: false, legacy_candidates: ['C:\\Users\\a\\AppData\\Roaming\\YuiLiveKit\\comments.db'],
     voice: {
@@ -182,6 +191,12 @@ test('top bar, comments, greetings and the history import', async () => {
     assert.equal(await page.$$eval('#comments img', imgs => imgs.length), 0, 'markup stays text (K7)');
     assert.match(await page.textContent('[data-key="youtube:2"]'), /<b>name<\/b>初見<img src=x onerror=alert\(1\)>/);
     assert.match(await page.textContent('[data-key="youtube:3"]'), /前回 11\/1（3回前）/);
+    // Starting again on the same stream puts its stored chat back above anything new.
+    await page.evaluate(() => window.fire('chat', { type: 'reset' }));
+    await page.evaluate(m => window.fire('chat', m), message('youtube:9', { text: 'new', parts: [{ type: 'text', text: 'new' }] }));
+    await page.evaluate(([a, b, c]) => window.fire('chat', { type: 'restored', messages: [a, b, c], support: [] }),
+      [message('youtube:1'), message('youtube:2', { author: '<b>name</b>', parts: [{ type: 'text', text: '<img src=x onerror=alert(1)>' }], first_time: true }), message('youtube:9')]);
+    assert.deepEqual(await page.$$eval('#comments li', n => n.map(x => x.dataset.key)), ['youtube:1', 'youtube:2', 'youtube:9'], 'restored chat comes first, without duplicates');
     await page.evaluate(() => window.fire('chat', { type: 'deleted', keys: ['youtube:2'] }));
     assert.equal(await page.$('#comments [data-key="youtube:2"]'), null, 'deleted comments leave the list (K1)');
 
@@ -190,7 +205,9 @@ test('top bar, comments, greetings and the history import', async () => {
     await page.waitForFunction(() => document.getElementById('ohayo-count').textContent === '3');
     await page.click('#ohayo-reset');
     await page.waitForFunction(() => document.getElementById('ohayo-count').textContent === '0');
-    await page.fill('#ohayo-keywords', 'おはよ\nおっは\nohayo');
+    assert.deepEqual(await page.$$eval('#ohayo-keywords input', boxes => boxes.map(b => b.value)), ['おはよ', 'おっは'], 'one box per keyword');
+    await page.click('#ohayo-keyword-add');
+    await page.keyboard.type('ohayo');
     await page.click('#ohayo-keywords-save');
     await page.waitForFunction(() => document.getElementById('ohayo-keywords-result').textContent === '保存しました');
     assert.deepEqual((await page.evaluate(() => window.calls.find(c => c[0] === 'set_tool_settings')))[1].ohayoKeywords, ['おはよ', 'おっは', 'ohayo']);
@@ -257,6 +274,27 @@ test('support, participants, appearance and OBS tabs', async () => {
     await page.waitForFunction(() => document.querySelector('#participants li:first-child').classList.contains('done'));
     await page.check('#participants-hide-done');
     assert.deepEqual(await page.$$eval('#participants li .name', n => n.map(x => x.textContent)), ['Second']);
+    // Keywords: + adds a box, − removes one, and the last box cannot be removed.
+    const keywordBoxes = () => page.$$eval('#participant-keywords input', boxes => boxes.map(b => b.value));
+    assert.deepEqual(await keywordBoxes(), ['参加希望']);
+    assert.equal(await page.isDisabled('#participant-keywords .keyword-row button'), true, 'the only box stays');
+    await page.click('#participant-keyword-add');
+    await page.keyboard.type('参戦');
+    await page.click('#participant-keyword-add');
+    await page.keyboard.type('消す');
+    assert.deepEqual(await keywordBoxes(), ['参加希望', '参戦', '消す']);
+    await page.click('#participant-keywords .keyword-row:nth-child(3) button');
+    await page.click('#participant-keyword-add');
+    assert.deepEqual(await page.$$eval('#withdraw-keywords input', boxes => boxes.map(b => b.value)), ['辞退']);
+    await page.click('#withdraw-keyword-add');
+    await page.keyboard.type('やめます');
+    await page.click('#participant-keyword-save');
+    await page.waitForFunction(() => document.getElementById('participant-keyword-result').textContent === '保存しました');
+    const keywordCall = (await page.evaluate(() => window.calls.filter(c => c[0] === 'set_tool_settings').pop()))[1];
+    assert.deepEqual(keywordCall.participantKeywords, ['参加希望', '参戦'], 'empty boxes are left out');
+    assert.deepEqual(keywordCall.withdrawKeywords, ['辞退', 'やめます']);
+    assert.deepEqual(await keywordBoxes(), ['参加希望', '参戦'], 'the boxes show what was saved');
+
     await page.evaluate(() => window.fire('chat', { type: 'participants', items: [] }));
     assert.equal(await page.$$eval('#participants li', n => n.length), 0, 'the list follows the app');
 
@@ -307,12 +345,43 @@ test('reading aloud, AI replies, emoji and viewer settings', async () => {
   try {
     const { page, errors } = await open(browser, server, baseState());
     await page.click('[data-tab="speech"]');
-    await page.waitForFunction(() => document.querySelectorAll('#speech-speaker option').length === 2);
+    await page.waitForFunction(() => document.getElementById('speech-speaker-pick').textContent === 'ずんだもん（ノーマル）');
     assert.equal(await page.inputValue('#speech-speaker'), '3');
     await page.check('#speech-enabled');
-    await page.selectOption('#speech-speaker', '2');
-    await page.fill('#speech-replacements', 'www=>わらわら\n草=>くさ\n壊れた行');
-    await page.fill('#speech-ng', 'ネタバレ\n暴言');
+    // The speaker is picked in a dialog: styles grouped by character, with a search and a preview.
+    await page.click('#speech-speaker-pick');
+    assert.equal(await page.isVisible('#speaker-dialog'), true);
+    assert.deepEqual(await page.$$eval('.speaker-group h3', h => h.map(x => x.textContent)), ['四国めたん', 'ずんだもん']);
+    assert.equal(await page.textContent('.speaker-chip.selected .speaker-choose'), 'ノーマル');
+    await page.waitForFunction(() => document.querySelector('.speaker-choose[data-id="2"] img.speaker-icon'));
+    assert.equal(await page.$$eval('.speaker-icon', i => i.length), 1, 'styles without an icon still show their name');
+    await page.fill('#speaker-search', 'めたん');
+    assert.deepEqual(await page.$$eval('.speaker-choose', b => b.map(x => x.textContent)), ['ノーマル', 'あまあま']);
+    await page.click('.speaker-chip:nth-child(2) .speaker-listen');
+    assert.equal((await page.evaluate(() => window.calls.filter(c => c[0] === 'speak_test').pop()))[1].voice.speaker, 0, 'previews that style');
+    assert.equal(await page.inputValue('#speech-speaker'), '3', 'previewing does not choose');
+    await page.click('.speaker-choose[data-id="2"]');
+    assert.equal(await page.isVisible('#speaker-dialog'), false, 'choosing closes the dialog');
+    assert.equal(await page.textContent('#speech-speaker-pick'), '四国めたん（ノーマル）');
+    assert.equal(await page.isVisible('#voicevox-install'), true, 'offers to install the engine when nothing answers');
+    await page.evaluate(() => window.fire('chat', { type: 'voicevox', installed: false, running: true, busy: false, status: '' }));
+    assert.equal(await page.isVisible('#voicevox-install'), false, 'not when VOICEVOX already answers');
+    assert.equal(await page.textContent('#voicevox-state'), '接続しています');
+    await page.evaluate(() => window.fire('chat', { type: 'voicevox', installed: false, running: false, busy: true, status: 'VOICEVOX エンジンを取得中: 120 MB / 約 1,895 MB' }));
+    assert.equal(await page.isDisabled('#voicevox-install'), true, 'one install at a time');
+    assert.match(await page.textContent('#voicevox-status'), /120 MB/);
+
+    // Replacements: a word and its reading per row. NG words: one per row.
+    await page.fill('#speech-replacements .keyword-row:first-child input:first-child', 'www');
+    await page.fill('#speech-replacements .keyword-row:first-child input.reading-of', 'わらわら');
+    await page.click('#speech-replacement-add');
+    await page.keyboard.type('草');
+    await page.fill('#speech-replacements .keyword-row:nth-child(2) input.reading-of', 'くさ');
+    await page.click('#speech-replacement-add');
+    await page.fill('#speech-replacements .keyword-row:nth-child(3) input.reading-of', '左が空の行');
+    await page.fill('#speech-ng .keyword-row:first-child input', 'ネタバレ');
+    await page.click('#speech-ng-add');
+    await page.keyboard.type('暴言');
     await page.click('#speech-save');
     await page.waitForFunction(() => document.getElementById('speech-result').textContent === '保存しました');
     const speech = (await page.evaluate(() => window.calls.find(c => c[0] === 'set_speech_settings')))[1].settings;
@@ -321,12 +390,18 @@ test('reading aloud, AI replies, emoji and viewer settings', async () => {
     assert.deepEqual(speech.replacements, [{ from: 'www', to: 'わらわら' }, { from: '草', to: 'くさ' }]);
     assert.deepEqual(speech.ng_words, ['ネタバレ', '暴言']);
     await page.click('#speech-test');
-    assert.equal((await page.evaluate(() => window.calls.find(c => c[0] === 'speak_test')))[1].voice.speaker, 2);
+    assert.equal((await page.evaluate(() => window.calls.filter(c => c[0] === 'speak_test').pop()))[1].voice.speaker, 2);
 
     await page.click('[data-tab="comments"]');
-    page.once('dialog', dialog => dialog.accept('ゆいちゃん'));
-    await page.click('#comments li .actions button:first-child');
+    // The reading is typed into the row itself and saved on Enter, with no dialog.
+    await page.fill('#comments li:first-child input.reading', '  ゆいちゃん ');
+    await page.press('#comments li:first-child input.reading', 'Enter');
     await page.waitForFunction(() => window.calls.some(c => c[0] === 'set_viewer_name'));
+    assert.deepEqual((await page.evaluate(() => window.calls.find(c => c[0] === 'set_viewer_name')))[1], { viewer: 'youtube:UC1', reading: 'ゆいちゃん' });
+    assert.deepEqual(await page.$$eval('#comments li input.reading', boxes => boxes.map(b => b.value)).then(v => [...new Set(v)]), ['ゆいちゃん'], 'every row from the viewer shows it');
+    await page.fill('#comments li:first-child input.reading', 'まちがい');
+    await page.press('#comments li:first-child input.reading', 'Escape');
+    assert.equal(await page.inputValue('#comments li:first-child input.reading'), 'ゆいちゃん', 'Escape puts back the saved reading');
     await page.click('#comments li .actions button:last-child');
     await page.waitForFunction(() => document.querySelector('#comments li .actions button:last-child').textContent === 'ブロック解除');
     await page.click('[data-tab="speech"]');
@@ -339,7 +414,10 @@ test('reading aloud, AI replies, emoji and viewer settings', async () => {
     await page.waitForFunction(() => document.getElementById('ai-key-state').textContent === 'キーは保存されています');
     assert.equal(await page.inputValue('#ai-key'), '', 'the key does not stay on screen');
     await page.check('#ai-enabled');
-    await page.fill('#ai-triggers', 'GPT\n教えて');
+    await page.fill('#ai-triggers .keyword-row:first-child input', 'GPT');
+    await page.click('#ai-trigger-add');
+    await page.keyboard.type('教えて');
+    await page.click('#ai-trigger-add');
     await page.fill('#ai-persona', '関西弁で');
     await page.click('#ai-save');
     await page.waitForFunction(() => document.getElementById('ai-result').textContent === '保存しました');

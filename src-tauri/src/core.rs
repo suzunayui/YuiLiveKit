@@ -23,7 +23,10 @@ use crate::{
 };
 
 const APPEARANCE_KEY: &str = "appearance";
+/// One keyword, as saved by 2026.1108.4 and earlier; read once if the list is not saved yet.
 const PARTICIPANT_KEYWORD_KEY: &str = "participant_keyword";
+const PARTICIPANT_KEYWORDS_KEY: &str = "participant_keywords";
+const WITHDRAW_KEYWORDS_KEY: &str = "withdraw_keywords";
 const OHAYO_KEYWORDS_KEY: &str = "ohayo_keywords";
 const SPEECH_KEY: &str = "speech";
 const AI_KEY: &str = "ai";
@@ -32,6 +35,8 @@ const SUBTITLES_KEY: &str = "subtitles";
 const TRANSLATION_KEY: &str = "translation";
 /// Chat sent this long before a start still counts as new, for clocks that differ a little.
 const START_GRACE_MS: i64 = 2000;
+/// How many stored messages go back on the settings window's list (its size).
+const RESTORE_SIZE: usize = 300;
 
 /// What the screens and the overlay hear about.
 #[derive(Clone, Debug, Serialize)]
@@ -40,6 +45,9 @@ pub enum Notice {
     /// A new collection started: drop what is shown.
     Reset,
     Message(Shown),
+    /// A stream that was collected before came back after a start. Only the settings window
+    /// shows these again; the overlay never repeats what it already showed.
+    Restored { messages: Vec<Shown>, support: Vec<Support> },
     Deleted { keys: Vec<String> },
     Status { platform: Platform, status: String, detail: Option<String> },
     Participants { items: Vec<Participant> },
@@ -53,6 +61,7 @@ pub enum Notice {
     TranslationState(TranslationState),
     TranslationsCleared,
     Runtime(RuntimeState),
+    Voicevox(crate::voicevox::VoicevoxState),
 }
 
 /// Subtitles, translation and what they need installed. Attached by the app once it knows its folders.
@@ -71,7 +80,9 @@ pub struct Status {
 /// Keywords for the stream tools, kept in memory and saved in the settings table.
 #[derive(Clone, Debug, Serialize)]
 pub struct ToolSettings {
-    pub participant_keyword: String,
+    pub participant_keywords: Vec<String>,
+    /// A waiting viewer who writes one of these leaves the queue. May be empty.
+    pub withdraw_keywords: Vec<String>,
     pub ohayo_keywords: Vec<String>,
 }
 
@@ -79,6 +90,8 @@ pub struct ToolSettings {
 struct Session {
     /// Chat older than this is history and is never read aloud or answered.
     started_ms: i64,
+    /// Message rows up to this one were stored before the current start.
+    before_start_row: i64,
     streams: Vec<i64>,
     cancel: Option<CancellationToken>,
     statuses: BTreeMap<&'static str, Status>,
@@ -125,6 +138,8 @@ pub struct Core {
     /// For background work that outlives the call that started it.
     me: std::sync::Weak<Core>,
     media: Mutex<Option<Arc<Media>>>,
+    /// The VOICEVOX engine this app can install and start; tests leave it out.
+    voicevox: Mutex<Option<Arc<crate::voicevox::Engine>>>,
     media_settings: Mutex<(SubtitleSettings, TranslationSettings)>,
     /// Subtitles started by "start chat" also stop with it.
     subtitles_with_chat: Mutex<bool>,
@@ -156,12 +171,25 @@ impl Core {
     }
 
     pub fn with_backends(db: Db, backends: Backends) -> Arc<Self> {
-        let participant_keyword = db
-            .setting(PARTICIPANT_KEYWORD_KEY)
+        let participant_keywords = db
+            .setting(PARTICIPANT_KEYWORDS_KEY)
             .ok()
             .flatten()
-            .and_then(|v| v.as_str().map(str::to_string))
-            .unwrap_or_else(|| tools::DEFAULT_PARTICIPANT_KEYWORD.into());
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+            .or_else(|| {
+                let old = db.setting(PARTICIPANT_KEYWORD_KEY).ok().flatten()?;
+                Some(vec![old.as_str()?.to_string()])
+            })
+            .map(|keywords| clean_keywords(&keywords))
+            .filter(|keywords| !keywords.is_empty())
+            .unwrap_or_else(|| vec![tools::DEFAULT_PARTICIPANT_KEYWORD.into()]);
+        let withdraw_keywords = db
+            .setting(WITHDRAW_KEYWORDS_KEY)
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+            .map(|keywords| clean_keywords(&keywords))
+            .unwrap_or_else(|| vec![tools::DEFAULT_WITHDRAW_KEYWORD.into()]);
         let ohayo_keywords = db
             .setting(OHAYO_KEYWORDS_KEY)
             .ok()
@@ -177,6 +205,7 @@ impl Core {
         let (notices, _) = broadcast::channel(1024);
         Arc::new_cyclic(|me| Self {
             media: Mutex::new(None),
+            voicevox: Mutex::new(None),
             media_settings: Mutex::new(media_settings),
             subtitles_with_chat: Mutex::new(false),
             last_subtitle: Mutex::new(None),
@@ -184,7 +213,7 @@ impl Core {
             db: Mutex::new(db),
             notices,
             session: Mutex::new(Session { started_ms: i64::MAX, ..Session::default() }),
-            settings: Mutex::new(ToolSettings { participant_keyword, ohayo_keywords }),
+            settings: Mutex::new(ToolSettings { participant_keywords, withdraw_keywords, ohayo_keywords }),
             voices: Mutex::new(voices),
             queue: Mutex::new(Queue::default()),
             wake: tokio::sync::Notify::new(),
@@ -219,6 +248,13 @@ impl Core {
         self.db().recent(&self.streams(), limit).unwrap_or_default()
     }
 
+    /// Like `snapshot`, but only what arrived since the current start: what the overlay
+    /// already showed before a restart is not shown again when it reloads.
+    pub fn overlay_snapshot(&self, limit: usize) -> Vec<Shown> {
+        let after = self.session.lock().unwrap().before_start_row;
+        self.db().select_shown(&self.streams(), &format!("AND m.id > {after}"), limit).unwrap_or_default()
+    }
+
     pub fn statuses(&self) -> BTreeMap<&'static str, Status> {
         self.session.lock().unwrap().statuses.clone()
     }
@@ -236,8 +272,10 @@ impl Core {
     /// Starts a new collection: only its streams are shown from now on.
     pub fn reset_session(&self) -> CancellationToken {
         let token = CancellationToken::new();
+        let before_start_row = self.db().last_message_row().unwrap_or(0);
         {
             let mut session = self.session.lock().unwrap();
+            session.before_start_row = before_start_row;
             if let Some(old) = session.cancel.replace(token.clone()) {
                 old.cancel();
             }
@@ -255,13 +293,27 @@ impl Core {
 
     pub fn add_stream(&self, platform: Platform, external_id: &str) -> Option<i64> {
         let id = self.db().ensure_stream(platform, external_id, now_ms()).ok()?;
-        {
+        let (added, before_start_row) = {
             let mut session = self.session.lock().unwrap();
-            if !session.streams.contains(&id) {
+            let added = !session.streams.contains(&id);
+            if added {
                 session.streams.push(id);
             }
-        }
+            (added, session.before_start_row)
+        };
         self.refresh_ohayo();
+        // Starting again on the same stream: its stored chat goes back on the settings window.
+        // Re-delivered comments are already stored, so nothing else would bring them back.
+        if added {
+            let messages = self
+                .db()
+                .select_shown(&[id], &format!("AND m.id <= {before_start_row}"), RESTORE_SIZE)
+                .unwrap_or_default();
+            if !messages.is_empty() {
+                self.notify(Notice::Restored { messages, support: self.support() });
+                self.notify_participants();
+            }
+        }
         Some(id)
     }
 
@@ -272,9 +324,17 @@ impl Core {
         let (shown, deleted, joined) = {
             let db = self.db();
             let shown: Vec<Shown> = batch.messages.iter().filter_map(|m| db.insert(stream_id, m).ok().flatten()).collect();
+            let has = |keywords: &[String], text: &str| keywords.iter().find(|k| text.contains(k.as_str())).cloned();
             let joined = shown
                 .iter()
-                .filter(|s| db.request_participant(s, &settings.participant_keyword).unwrap_or(false))
+                .filter(|s| {
+                    // Withdrawing wins, so "参加希望を辞退します" takes someone out rather than in.
+                    if has(&settings.withdraw_keywords, &s.message.text).is_some() {
+                        return db.withdraw_participant(s).unwrap_or(false);
+                    }
+                    // Any of the keywords asks to join; the first one found is enough.
+                    has(&settings.participant_keywords, &s.message.text).is_some_and(|k| db.request_participant(s, &k).unwrap_or(false))
+                })
                 .count();
             for s in &shown {
                 let _ = db.record_emoji(&s.message);
@@ -372,18 +432,28 @@ impl Core {
         Ok(self.ohayo())
     }
 
-    pub fn set_tool_settings(&self, participant_keyword: &str, ohayo_keywords: &[String]) -> Result<ToolSettings, String> {
-        let keyword: String = participant_keyword.trim().chars().take(20).collect();
-        if keyword.is_empty() {
-            return Err("参加管理のキーワードを入力してください".into());
+    pub fn set_tool_settings(
+        &self,
+        participant_keywords: &[String],
+        withdraw_keywords: &[String],
+        ohayo_keywords: &[String],
+    ) -> Result<ToolSettings, String> {
+        let participant_keywords = clean_keywords(participant_keywords);
+        if participant_keywords.is_empty() {
+            return Err("参加のキーワードを1つ以上入力してください".into());
+        }
+        let withdraw_keywords = clean_keywords(withdraw_keywords);
+        if let Some(both) = withdraw_keywords.iter().find(|k| participant_keywords.contains(k)) {
+            return Err(format!("「{both}」が参加と辞退の両方にあります"));
         }
         let keywords = clean_keywords(ohayo_keywords);
         {
             let db = self.db();
-            db.set_setting(PARTICIPANT_KEYWORD_KEY, &serde_json::json!(keyword))?;
+            db.set_setting(PARTICIPANT_KEYWORDS_KEY, &serde_json::json!(participant_keywords))?;
+            db.set_setting(WITHDRAW_KEYWORDS_KEY, &serde_json::json!(withdraw_keywords))?;
             db.set_setting(OHAYO_KEYWORDS_KEY, &serde_json::json!(keywords))?;
         }
-        *self.settings.lock().unwrap() = ToolSettings { participant_keyword: keyword, ohayo_keywords: keywords };
+        *self.settings.lock().unwrap() = ToolSettings { participant_keywords, withdraw_keywords, ohayo_keywords: keywords };
         self.refresh_ohayo();
         Ok(self.tool_settings())
     }
@@ -608,6 +678,9 @@ impl Core {
         if utterance.text.is_empty() {
             return Ok(());
         }
+        if let Some(engine) = self.voicevox() {
+            engine.ensure_running().await?;
+        }
         let wav = speech::voicevox_synthesize(&self.http, &self.backends.voicevox, &utterance.text, &utterance.voice).await?;
         let player = self.backends.player.clone();
         let volume = utterance.voice.volume;
@@ -632,7 +705,26 @@ impl Core {
     }
 
     pub async fn voicevox_speakers(&self) -> Result<Vec<speech::Speaker>, String> {
+        if let Some(engine) = self.voicevox() {
+            engine.ensure_running().await?;
+        }
         speech::voicevox_speakers(&self.http, &self.backends.voicevox).await
+    }
+
+    /// Style id to icon address, for the speaker picker.
+    pub async fn voicevox_icons(&self) -> Result<std::collections::BTreeMap<u32, String>, String> {
+        let speakers = self.voicevox_speakers().await?;
+        let mut uuids: Vec<String> = speakers.into_iter().map(|s| s.uuid).filter(|u| !u.is_empty()).collect();
+        uuids.dedup();
+        Ok(speech::voicevox_icons(&self.http, &self.backends.voicevox, &uuids).await)
+    }
+
+    pub fn attach_voicevox(&self, engine: Arc<crate::voicevox::Engine>) {
+        *self.voicevox.lock().unwrap() = Some(engine);
+    }
+
+    pub fn voicevox(&self) -> Option<Arc<crate::voicevox::Engine>> {
+        self.voicevox.lock().unwrap().clone()
     }
 
     // --- Subtitles and translation ------------------------------------------------------
@@ -778,6 +870,9 @@ impl Core {
     /// Ends collection and every worker process; called when the app exits.
     pub fn shutdown(&self) {
         self.stop();
+        if let Some(engine) = self.voicevox() {
+            engine.close();
+        }
         if let Some(media) = self.media() {
             media.translation.stop();
             media.subtitles.kill();
@@ -930,6 +1025,46 @@ mod tests {
     }
 
     #[test]
+    fn starting_again_on_a_stream_restores_it_on_the_settings_window_only() {
+        let core = Core::new(Db::open_in_memory().unwrap());
+        core.reset_session();
+        let stream = core.add_stream(Platform::Youtube, "v").unwrap();
+        core.ingest(stream, batch(vec![message("1", "UC1", "参加希望"), message("2", "UC2", "hi")]));
+        assert_eq!(core.overlay_snapshot(10).len(), 2);
+
+        core.reset_session();
+        let mut notices = core.subscribe();
+        assert_eq!(core.add_stream(Platform::Youtube, "v"), Some(stream));
+        let mut restored = None;
+        let mut participants = None;
+        while let Ok(notice) = notices.try_recv() {
+            match notice {
+                Notice::Restored { messages, .. } => restored = Some(messages.iter().map(|m| m.message.id.clone()).collect::<Vec<_>>()),
+                Notice::Participants { items } => participants = Some(items.len()),
+                Notice::Message(_) => panic!("stored chat is not announced as new"),
+                _ => {}
+            }
+        }
+        assert_eq!(restored, Some(vec!["1".to_string(), "2".to_string()]));
+        assert_eq!(participants, Some(1), "the waiting list comes back");
+        assert!(core.overlay_snapshot(10).is_empty(), "the overlay does not show them again after a reload");
+        assert_eq!(core.snapshot(10).len(), 2, "the settings window does");
+
+        // YouTube sends recent chat again on connecting; only what is really new is announced.
+        core.ingest(stream, batch(vec![message("2", "UC2", "hi"), message("3", "UC3", "new")]));
+        let new: Vec<_> = std::iter::from_fn(|| notices.try_recv().ok())
+            .filter_map(|n| if let Notice::Message(m) = n { Some(m.message.id) } else { None })
+            .collect();
+        assert_eq!(new, vec!["3"]);
+        assert_eq!(core.overlay_snapshot(10).iter().map(|s| s.message.id.as_str()).collect::<Vec<_>>(), vec!["3"]);
+
+        core.reset_session();
+        let mut notices = core.subscribe();
+        core.add_stream(Platform::Youtube, "other").unwrap();
+        assert!(std::iter::from_fn(|| notices.try_recv().ok()).all(|n| !matches!(n, Notice::Restored { .. })), "a new stream starts empty");
+    }
+
+    #[test]
     fn announces_messages_then_removals() {
         let core = Core::new(Db::open_in_memory().unwrap());
         let mut notices = core.subscribe();
@@ -965,10 +1100,47 @@ mod tests {
     #[test]
     fn keywords_can_change_and_are_cleaned() {
         let core = Core::new(Db::open_in_memory().unwrap());
-        assert!(core.set_tool_settings("  ", &[]).is_err());
-        let settings = core.set_tool_settings(" 参加 ", &[" おはよ ".into(), "".into(), "おはよ".into()]).unwrap();
-        assert_eq!(settings.participant_keyword, "参加");
+        assert!(core.set_tool_settings(&["  ".into()], &[], &[]).is_err());
+        assert!(core.set_tool_settings(&["参加".into()], &["参加".into()], &[]).is_err(), "a keyword cannot both join and withdraw");
+        let settings = core
+            .set_tool_settings(&[" 参加 ".into(), "".into(), "参戦".into(), "参加".into()], &[], &[" おはよ ".into(), "".into(), "おはよ".into()])
+            .unwrap();
+        assert!(settings.withdraw_keywords.is_empty(), "withdrawing can be turned off");
+        assert_eq!(settings.participant_keywords, ["参加", "参戦"]);
         assert_eq!(settings.ohayo_keywords, ["おはよ"]);
+    }
+
+    #[test]
+    fn any_participant_keyword_joins_and_the_old_single_keyword_carries_over() {
+        let db = Db::open_in_memory().unwrap();
+        db.set_setting(PARTICIPANT_KEYWORD_KEY, &serde_json::json!("参戦希望")).unwrap();
+        let core = Core::new(db);
+        assert_eq!(core.tool_settings().participant_keywords, ["参戦希望"], "the keyword saved by older versions is kept");
+        assert_eq!(core.tool_settings().withdraw_keywords, ["辞退"]);
+        core.set_tool_settings(&["参加希望".into(), "参戦".into()], &[], &[]).unwrap();
+        core.reset_session();
+        let stream = core.add_stream(Platform::Youtube, "v").unwrap();
+        core.ingest(stream, batch(vec![message("1", "UC1", "参戦します"), message("2", "UC2", "参加希望です"), message("3", "UC3", "見てます")]));
+        assert_eq!(core.participants().iter().map(|p| p.author.as_str()).collect::<Vec<_>>(), ["UC1", "UC2"]);
+    }
+
+    #[test]
+    fn a_withdraw_keyword_takes_a_waiting_viewer_out() {
+        let core = Core::new(Db::open_in_memory().unwrap());
+        core.reset_session();
+        let stream = core.add_stream(Platform::Youtube, "v").unwrap();
+        core.ingest(stream, batch(vec![message("1", "UC1", "参加希望"), message("2", "UC2", "参加希望")]));
+        let mut notices = core.subscribe();
+        core.ingest(stream, batch(vec![message("3", "UC1", "やっぱり辞退します"), message("4", "UC3", "辞退")]));
+        assert_eq!(core.participants().iter().map(|p| p.author.as_str()).collect::<Vec<_>>(), ["UC2"], "only the person who wrote it leaves");
+        assert!(std::iter::from_fn(|| notices.try_recv().ok()).any(|n| matches!(n, Notice::Participants { items } if items.len() == 1)));
+
+        // Both keywords in one comment: withdrawing wins.
+        core.ingest(stream, batch(vec![message("5", "UC2", "参加希望を辞退します")]));
+        assert!(core.participants().is_empty());
+        // Joining again later still works.
+        core.ingest(stream, batch(vec![message("6", "UC1", "参加希望")]));
+        assert_eq!(core.participants().len(), 1);
     }
 
     #[test]

@@ -8,6 +8,7 @@ use crate::db::{err, Db, Result, Shown};
 use crate::model::kind;
 
 pub const DEFAULT_PARTICIPANT_KEYWORD: &str = "参加希望";
+pub const DEFAULT_WITHDRAW_KEYWORD: &str = "辞退";
 /// Not a bare "おは": that also matched words such as "おはなし".
 pub const DEFAULT_OHAYO_KEYWORDS: [&str; 5] = ["おはよ", "おはー", "おっは", "おはお", "ohayo"];
 pub const SUPPORT_KINDS: [&str; 6] =
@@ -57,6 +58,19 @@ impl Db {
     /// Adds a participant request from a newly stored message. A repeat request from someone
     /// already waiting is recorded as "duplicate", so it never joins later (K3). Each message is
     /// stored once, so nothing is ever considered twice, even after clearing the queue (K4).
+    pub fn withdraw_participant(&self, shown: &Shown) -> Result<bool> {
+        // Only the person themself can withdraw, so it needs to know who wrote the comment.
+        let Some(viewer) = shown.viewer_id.filter(|_| shown.message.kind == kind::TEXT) else { return Ok(false) };
+        let changed = self
+            .conn()
+            .execute(
+                "UPDATE participants SET status = 'removed', updated_ms = ?3 WHERE stream_id = ?1 AND viewer_id = ?2 AND status = 'waiting'",
+                params![shown.stream_id, viewer, now_ms()],
+            )
+            .map_err(err)?;
+        Ok(changed > 0)
+    }
+
     pub fn request_participant(&self, shown: &Shown, keyword: &str) -> Result<bool> {
         let message = &shown.message;
         if message.kind != kind::TEXT || keyword.is_empty() || !message.text.contains(keyword) {

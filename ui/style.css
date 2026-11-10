@@ -61,6 +61,36 @@ code { background: var(--bg); padding: 2px 6px; border-radius: 4px; user-select:
 .text img { height: 1.4em; vertical-align: middle; }
 .actions { display: flex; gap: 4px; grid-row: 1 / span 2; grid-column: 3; }
 .actions button { padding: 2px 8px; font-size: 12px; }
+.keyword-list { display: grid; gap: 6px; margin-bottom: 8px; max-width: 360px; }
+.keyword-row { display: flex; gap: 6px; }
+.keyword-row input { flex: 1; min-width: 0; }
+.keyword-list.pairs { max-width: 520px; }
+.keyword-row .arrow { align-self: center; color: var(--muted); }
+.keyword-row button, .keyword-add { min-width: 36px; padding: 6px 10px; }
+.keyword-add { margin-bottom: 4px; }
+h3.sub { font-size: 14px; margin: 12px 0 4px; }
+.speaker-pick { display: block; width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.speaker-pick::after { content: " ▾"; color: var(--muted); }
+#speaker-dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 64px); padding: 0; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--card); color: var(--text); overflow-y: auto; }
+#speaker-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+#speaker-dialog .dialog-head { position: sticky; top: 0; display: flex; gap: 12px; align-items: center; padding: 14px 16px 8px;
+  background: var(--card); border-bottom: 1px solid var(--line); }
+#speaker-dialog .dialog-head h2 { margin: 0; flex: none; }
+#speaker-search { flex: 1; min-width: 0; }
+#speaker-dialog > .hint { margin: 8px 16px 0; }
+#speaker-groups { padding: 4px 16px 16px; }
+.speaker-group h3 { font-size: 14px; margin: 12px 0 6px; }
+.speaker-styles { display: flex; flex-wrap: wrap; gap: 6px; }
+.speaker-chip { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.speaker-chip:has(.speaker-icon) { border-radius: 28px; }
+.speaker-chip button { border: none; border-radius: 0; padding: 5px 12px; background: var(--bg); }
+.speaker-chip .speaker-choose { display: inline-flex; align-items: center; gap: 8px; padding-left: 6px; }
+.speaker-icon { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; background: var(--card); }
+.speaker-chip .speaker-listen { padding: 5px 9px; border-left: 1px solid var(--line); color: var(--muted); }
+.speaker-chip.selected { border-color: var(--accent); }
+.speaker-chip.selected .speaker-choose { background: var(--accent); color: #fff; font-weight: 700; }
+.actions input.reading { width: 9em; padding: 2px 8px; font-size: 12px; }
 
 .look-part { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0 12px; margin: 0 0 12px;
   border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; }

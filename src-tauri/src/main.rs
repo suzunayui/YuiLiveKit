@@ -16,7 +16,8 @@ use yui_live_kit::{
     runtime::{Feature, Paths, Runtime, RuntimeState},
     subtitles::{Launch, SubtitleSettings, SubtitleState, Subtitles},
     translation::{Translation, TranslationSettings, TranslationState},
-    speech::{AiSettings, Speaker, SpeechSettings, Viewers, Voice},
+    speech::{self, AiSettings, Speaker, SpeechSettings, Viewers, Voice},
+    voicevox::{self, VoicevoxState},
     tools::{ClearMode, Emoji, Ohayo, Participant, Support},
 };
 
@@ -163,8 +164,13 @@ fn reset_ohayo(core: CoreState<'_>) -> Result<Ohayo, String> {
 }
 
 #[tauri::command]
-fn set_tool_settings(core: CoreState<'_>, participant_keyword: String, ohayo_keywords: Vec<String>) -> Result<ToolSettings, String> {
-    core.set_tool_settings(&participant_keyword, &ohayo_keywords)
+fn set_tool_settings(
+    core: CoreState<'_>,
+    participant_keywords: Vec<String>,
+    withdraw_keywords: Vec<String>,
+    ohayo_keywords: Vec<String>,
+) -> Result<ToolSettings, String> {
+    core.set_tool_settings(&participant_keywords, &withdraw_keywords, &ohayo_keywords)
 }
 
 #[tauri::command]
@@ -214,6 +220,21 @@ fn voice_state(core: &Core) -> VoiceState {
 #[tauri::command]
 fn get_voice_state(core: CoreState<'_>) -> VoiceState {
     voice_state(&core)
+}
+
+#[tauri::command]
+async fn voicevox_state(core: CoreState<'_>) -> Result<VoicevoxState, String> {
+    Ok(core.voicevox().ok_or("VOICEVOX は使えません")?.refresh().await)
+}
+
+#[tauri::command]
+async fn voicevox_icons(core: CoreState<'_>) -> Result<std::collections::BTreeMap<u32, String>, String> {
+    core.voicevox_icons().await
+}
+
+#[tauri::command]
+async fn install_voicevox(core: CoreState<'_>) -> Result<(), String> {
+    core.voicevox().ok_or("VOICEVOX は使えません")?.install().await
 }
 
 #[tauri::command]
@@ -477,6 +498,9 @@ fn main() {
             set_ai_settings,
             set_api_key,
             voicevox_speakers,
+            voicevox_state,
+            voicevox_icons,
+            install_voicevox,
             speak_test,
             set_viewer_name,
             set_blocked,
@@ -492,6 +516,14 @@ fn main() {
             app.manage(core.clone());
             tauri::async_runtime::spawn(core.clone().run_speech());
             attach_media(app.handle(), &core, &data_dir);
+            let voicevox_dir =
+                std::env::var_os("YUI_LIVE_KIT_VOICEVOX_DIR").map(PathBuf::from).unwrap_or_else(|| data_dir.join("voicevox").join("engine"));
+            let weak = Arc::downgrade(&core);
+            core.attach_voicevox(voicevox::Engine::new(voicevox_dir, speech::VOICEVOX_BASE, move |state| {
+                if let Some(core) = weak.upgrade() {
+                    core.notify_media(Notice::Voicevox(state));
+                }
+            }));
 
             let handle = app.handle().clone();
             let mut notices = core.subscribe();

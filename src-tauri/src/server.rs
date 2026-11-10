@@ -93,7 +93,7 @@ async fn overlay_ws(
 fn snapshot_json(core: &Core) -> String {
     serde_json::json!({
         "type": "snapshot",
-        "messages": core.snapshot(SNAPSHOT_SIZE),
+        "messages": core.overlay_snapshot(SNAPSHOT_SIZE),
         "appearance": core.appearance(),
         "participants": core.participants(),
         "ohayo": core.ohayo(),
@@ -112,11 +112,14 @@ async fn overlay_socket(mut socket: WebSocket, core: Arc<Core>) {
         tokio::select! {
             notice = notices.recv() => {
                 let text = match notice {
-                    Ok(Notice::Status { .. })
+                    // Restored chat is for the settings window; the overlay showed it already.
+                    Ok(Notice::Restored { .. })
+                    | Ok(Notice::Status { .. })
                     | Ok(Notice::Speech { .. })
                     | Ok(Notice::SubtitleState(_))
                     | Ok(Notice::TranslationState(_))
-                    | Ok(Notice::Runtime(_)) => continue,
+                    | Ok(Notice::Runtime(_))
+                    | Ok(Notice::Voicevox(_)) => continue,
                     Ok(notice) => serde_json::to_string(&notice).unwrap_or_default(),
                     // Too far behind: start over from the current state.
                     Err(RecvError::Lagged(_)) => snapshot_json(&core),
