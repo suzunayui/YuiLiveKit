@@ -233,6 +233,11 @@ async fn voicevox_icons(core: CoreState<'_>) -> Result<std::collections::BTreeMa
 }
 
 #[tauri::command]
+async fn uninstall_voicevox(core: CoreState<'_>) -> Result<(), String> {
+    core.voicevox().ok_or("VOICEVOX は使えません")?.uninstall().await
+}
+
+#[tauri::command]
 async fn install_voicevox(core: CoreState<'_>) -> Result<(), String> {
     core.voicevox().ok_or("VOICEVOX は使えません")?.install().await
 }
@@ -501,6 +506,7 @@ fn main() {
             voicevox_state,
             voicevox_icons,
             install_voicevox,
+            uninstall_voicevox,
             speak_test,
             set_viewer_name,
             set_blocked,

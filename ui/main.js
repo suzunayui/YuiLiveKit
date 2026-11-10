@@ -713,14 +713,24 @@ $('speech-ng-add').addEventListener('click', () => addKeywordRow('speech-ng').fo
 // --- VOICEVOX engine -------------------------------------------------------------------
 
 function renderVoicevox(state) {
-  $('voicevox-state').textContent = state.busy ? '導入中'
-    : state.running ? '接続しています'
-    : state.installed ? '導入済み（使うときに起動します）'
+  const version = state.installed_version ? `（導入した版 ${state.installed_version}）` : '';
+  $('voicevox-state').textContent = state.busy ? '処理中'
+    : state.running ? `接続しています${version}`
+    : state.installed ? `導入済み${version}。使うときに起動します`
     : '未導入（VOICEVOX も起動していません）';
   $('voicevox-status').textContent = state.status || '';
-  $('voicevox-install').hidden = state.installed || (state.running && !state.busy);
+  // Offer the install when nothing is there, and again when a newer engine can replace the installed one.
+  const outdated = state.installed && state.installed_version !== state.latest_version;
+  $('voicevox-install').textContent = outdated ? `VOICEVOX エンジンを ${state.latest_version} に更新（約 1.9 GB）` : 'VOICEVOX エンジンを導入（約 1.9 GB）';
+  $('voicevox-install').hidden = !outdated && (state.installed || (state.running && !state.busy));
   $('voicevox-install').disabled = state.busy;
+  $('voicevox-uninstall').hidden = !state.installed;
+  $('voicevox-uninstall').disabled = state.busy;
 }
+$('voicevox-uninstall').addEventListener('click', () => {
+  if (!confirm('導入した VOICEVOX エンジン（約 2.2 GB）を削除しますか？読み上げには、もう一度導入するか VOICEVOX の起動が必要になります。')) return;
+  attempt('voicevox-result', () => invoke('uninstall_voicevox'), '');
+});
 $('voicevox-install').addEventListener('click', () => attempt('voicevox-result', async () => {
   $('voicevox-result').textContent = '';
   await invoke('install_voicevox');

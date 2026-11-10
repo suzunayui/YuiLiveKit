@@ -349,6 +349,23 @@ impl Db {
         Ok(ids.iter().map(|id| message_key(platform, id)).collect())
     }
 
+    /// The newest stream whose id starts with `prefix` and that was still active at
+    /// `since_ms`: its last message, or its start when it has none, is not older than that.
+    /// Twitch chat has no stream id, so this is how a restart finds the stream it was on.
+    pub fn continuing_stream(&self, platform: Platform, prefix: &str, since_ms: i64) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT s.external_id FROM streams s
+                 WHERE s.platform = ?1 AND substr(s.external_id, 1, length(?2)) = ?2
+                   AND MAX(s.first_seen_ms, COALESCE((SELECT MAX(m.created_ms) FROM messages m WHERE m.stream_id = s.id), 0)) >= ?3
+                 ORDER BY s.id DESC LIMIT 1",
+                params![platform.as_str(), prefix, since_ms],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(err)
+    }
+
     /// The newest message row, so a start can tell what was stored before it.
     pub fn last_message_row(&self) -> Result<i64> {
         self.conn.query_row("SELECT COALESCE(MAX(id), 0) FROM messages", [], |r| r.get(0)).map_err(err)

@@ -92,7 +92,8 @@ const fakeTauri = ({ state }) => {
             { id: 0, name: '四国めたん（あまあま）', character: '四国めたん', style: 'あまあま' },
             { id: 3, name: 'ずんだもん（ノーマル）', character: 'ずんだもん', style: 'ノーマル' },
           ];
-          case 'voicevox_state': return { installed: false, running: false, busy: false, status: '' };
+          case 'voicevox_state': return { installed: false, running: false, busy: false, status: '', installed_version: null, latest_version: '0.26.1' };
+          case 'uninstall_voicevox': return null;
           case 'voicevox_icons': return { 2: 'data:image/png;base64,iVBORw0KGgo=' };
           case 'install_voicevox': return null;
           case 'set_speech_settings': voice = { ...voice, speech: args.settings }; return args.settings;
@@ -370,6 +371,14 @@ test('reading aloud, AI replies, emoji and viewer settings', async () => {
     await page.evaluate(() => window.fire('chat', { type: 'voicevox', installed: false, running: false, busy: true, status: 'VOICEVOX エンジンを取得中: 120 MB / 約 1,895 MB' }));
     assert.equal(await page.isDisabled('#voicevox-install'), true, 'one install at a time');
     assert.match(await page.textContent('#voicevox-status'), /120 MB/);
+    assert.equal(await page.isVisible('#voicevox-uninstall'), false, 'nothing to remove before installing');
+    await page.evaluate(() => window.fire('chat', { type: 'voicevox', installed: true, running: false, busy: false, status: '', installed_version: '0.25.0', latest_version: '0.26.1' }));
+    assert.match(await page.textContent('#voicevox-install'), /0\.26\.1 に更新/, 'an older engine can be updated');
+    await page.evaluate(() => window.fire('chat', { type: 'voicevox', installed: true, running: false, busy: false, status: '', installed_version: '0.26.1', latest_version: '0.26.1' }));
+    assert.equal(await page.isVisible('#voicevox-install'), false);
+    page.once('dialog', dialog => dialog.accept());
+    await page.click('#voicevox-uninstall');
+    await page.waitForFunction(() => window.calls.some(c => c[0] === 'uninstall_voicevox'));
 
     // Replacements: a word and its reading per row. NG words: one per row.
     await page.fill('#speech-replacements .keyword-row:first-child input:first-child', 'www');

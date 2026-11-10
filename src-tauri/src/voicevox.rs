@@ -28,6 +28,9 @@ pub struct VoicevoxState {
     pub running: bool,
     pub busy: bool,
     pub status: String,
+    /// The version this app installed, and the one it would install now.
+    pub installed_version: Option<String>,
+    pub latest_version: String,
 }
 
 pub struct Engine {
@@ -64,12 +67,76 @@ impl Engine {
             http: reqwest::Client::builder().timeout(Duration::from_secs(3)).build().unwrap_or_default(),
             publish: Box::new(publish),
         });
+        // An install that was cut short (the app closed while downloading) leaves up to 2 GB behind.
+        engine.remove_leftovers();
         let installed = engine.installed();
+        let version = engine.installed_version();
         engine.update(|s| {
             s.installed = installed;
+            s.installed_version = version;
+            s.latest_version = VERSION.into();
             s.status = if installed { "VOICEVOX エンジンは導入済みです（使うときに起動します）".into() } else { String::new() };
         });
         engine
+    }
+
+    fn archive(&self) -> PathBuf {
+        self.dir.with_file_name("voicevox_engine.vvpp")
+    }
+
+    fn unpacking(&self) -> PathBuf {
+        self.dir.with_file_name("voicevox.unpacking")
+    }
+
+    fn remove_leftovers(&self) {
+        let _ = std::fs::remove_file(self.archive());
+        let _ = std::fs::remove_dir_all(self.unpacking());
+    }
+
+    pub fn installed_version(&self) -> Option<String> {
+        if !self.installed() {
+            return None;
+        }
+        let marker: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(self.marker()).ok()?).ok()?;
+        marker["version"].as_str().map(str::to_string)
+    }
+
+    /// Removes the engine this app installed. A VOICEVOX the user runs is not touched.
+    pub async fn uninstall(&self) -> Result<(), String> {
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.busy {
+                return Err("導入中です。終わるまでお待ちください".into());
+            }
+            state.busy = true;
+        }
+        self.close();
+        // The engine needs a moment to let go of its files after it is stopped.
+        let mut result = Ok(());
+        for _ in 0..10 {
+            result = match std::fs::remove_dir_all(&self.dir) {
+                Err(e) if self.dir.exists() => Err(format!("削除できませんでした: {e}")),
+                _ => Ok(()),
+            };
+            if result.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        self.remove_leftovers();
+        let installed = self.installed();
+        let running = self.answers().await;
+        self.update(|s| {
+            s.busy = false;
+            s.installed = installed;
+            s.installed_version = None;
+            s.running = running;
+            s.status = match &result {
+                Ok(()) => "VOICEVOX エンジンを削除しました".into(),
+                Err(e) => e.clone(),
+            };
+        });
+        result
     }
 
     fn marker(&self) -> PathBuf {
@@ -193,10 +260,15 @@ impl Engine {
         }
         self.update(|s| s.status = "VOICEVOX エンジンの導入を準備中".into());
         let result = self.install_inner().await;
+        if result.is_err() {
+            self.remove_leftovers();
+        }
         let installed = self.installed();
+        let version = self.installed_version();
         self.update(|s| {
             s.busy = false;
             s.installed = installed;
+            s.installed_version = version;
             s.status = match &result {
                 Ok(()) => "VOICEVOX エンジンを導入しました".into(),
                 Err(e) => format!("導入できませんでした。再試行できます: {e}"),
@@ -209,14 +281,14 @@ impl Engine {
         self.close();
         let parent = self.dir.parent().ok_or("導入先がありません")?.to_path_buf();
         std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
-        let archive = parent.join("voicevox_engine.vvpp");
+        let archive = self.archive();
         download_checked(ENGINE.url, ENGINE.sha256, &archive, |size| {
             self.update(|s| s.status = format!("VOICEVOX エンジンを取得中: {:.0} MB / 約 1,895 MB", size as f64 / 1_048_576.0));
         })
         .await?;
 
         self.update(|s| s.status = "VOICEVOX エンジンを展開中（数分かかります）".into());
-        let unpacked = parent.join("voicevox.unpacking");
+        let unpacked = self.unpacking();
         let _ = std::fs::remove_dir_all(&unpacked);
         std::fs::create_dir_all(&unpacked).map_err(|e| e.to_string())?;
         // Windows' own tar reads zip files and is much faster than Expand-Archive on 2 GB.
@@ -274,6 +346,27 @@ mod tests {
         engine.ensure_running().await.unwrap();
         assert!(engine.state().running);
         assert!(engine.child.lock().unwrap().is_none(), "nothing was started");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn leftovers_are_cleared_and_the_engine_can_be_removed() {
+        let dir = temp("manage");
+        std::fs::write(dir.join("voicevox_engine.vvpp"), "half a download").unwrap();
+        std::fs::create_dir_all(dir.join("voicevox.unpacking/x")).unwrap();
+        std::fs::create_dir_all(dir.join("engine")).unwrap();
+        std::fs::write(dir.join("engine/run.exe"), "").unwrap();
+        std::fs::write(dir.join("engine/yuilivekit.ready.json"), r#"{"version":"0.25.0"}"#).unwrap();
+
+        let engine = Engine::new(dir.join("engine"), "http://127.0.0.1:9", |_| {});
+        assert!(!dir.join("voicevox_engine.vvpp").exists() && !dir.join("voicevox.unpacking").exists(), "a cut-short install is cleaned up");
+        let state = engine.state();
+        assert_eq!((state.installed, state.installed_version.as_deref(), state.latest_version.as_str()), (true, Some("0.25.0"), VERSION));
+
+        engine.uninstall().await.unwrap();
+        assert!(!dir.join("engine").exists());
+        let state = engine.state();
+        assert_eq!((state.installed, state.installed_version, state.busy), (false, None, false));
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -5,7 +5,7 @@
     "tauri": "tauri",
     "dev": "tauri dev",
     "build": "tauri build",
-    "test": "cargo test --manifest-path src-tauri/Cargo.toml --lib && cargo build --manifest-path src-tauri/Cargo.toml --examples && node --test tests/",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml --lib && cargo build --manifest-path src-tauri/Cargo.toml --examples && node --test \"tests/*.test.cjs\"",
     "test:perf": "cargo test --manifest-path src-tauri/Cargo.toml --release --lib -- --ignored --nocapture",
     "release": "tauri build && node scripts/package-release.cjs"
   },

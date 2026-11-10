@@ -35,6 +35,8 @@ const SUBTITLES_KEY: &str = "subtitles";
 const TRANSLATION_KEY: &str = "translation";
 /// Chat sent this long before a start still counts as new, for clocks that differ a little.
 const START_GRACE_MS: i64 = 2000;
+/// Starting again on a Twitch channel this soon after its last activity continues the same stream.
+const TWITCH_RESUME_MS: i64 = 3 * 60 * 60 * 1000;
 /// How many stored messages go back on the settings window's list (its size).
 const RESTORE_SIZE: usize = 300;
 
@@ -935,7 +937,7 @@ impl Core {
             core.set_status(Platform::Twitch, "starting", None);
             tokio::spawn(async move {
                 // One stream per collection, so reconnects do not count as new streams.
-                let external_id = format!("{channel}:{}", now_ms());
+                let external_id = core.twitch_stream_id(&channel);
                 let mut stream_id = None;
                 twitch::run(channel, token.clone(), |event| match event {
                     twitch::Event::Connected => {
@@ -954,6 +956,18 @@ impl Core {
             });
         }
         Ok(())
+    }
+
+    /// Twitch chat carries no stream id. A start soon after the channel's last activity goes on
+    /// with that stream, so its chat comes back like a YouTube stream's; otherwise a new one begins.
+    pub fn twitch_stream_id(&self, channel: &str) -> String {
+        let now = now_ms();
+        let prefix = format!("{channel}:");
+        self.db()
+            .continuing_stream(Platform::Twitch, &prefix, now - TWITCH_RESUME_MS)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| format!("{prefix}{now}"))
     }
 
     /// Stops collecting. What was collected stays on the overlay until the next start.
@@ -1062,6 +1076,30 @@ mod tests {
         let mut notices = core.subscribe();
         core.add_stream(Platform::Youtube, "other").unwrap();
         assert!(std::iter::from_fn(|| notices.try_recv().ok()).all(|n| !matches!(n, Notice::Restored { .. })), "a new stream starts empty");
+    }
+
+    #[test]
+    fn a_twitch_restart_continues_the_stream_but_a_later_one_is_new() {
+        let core = Core::new(Db::open_in_memory().unwrap());
+        core.reset_session();
+        let first = core.twitch_stream_id("yui");
+        let stream = core.add_stream(Platform::Twitch, &first).unwrap();
+        core.ingest(stream, batch(vec![message("1", "u1", "おはよう")]));
+        core.adjust_ohayo(2).unwrap();
+
+        core.reset_session();
+        assert_eq!(core.twitch_stream_id("yui"), first, "soon after: the same stream");
+        assert_ne!(core.twitch_stream_id("yui_sub"), first, "another channel is another stream");
+        let mut notices = core.subscribe();
+        core.add_stream(Platform::Twitch, &first).unwrap();
+        assert!(std::iter::from_fn(|| notices.try_recv().ok()).any(|n| matches!(n, Notice::Restored { messages, .. } if messages.len() == 1)));
+        assert_eq!(core.ohayo().count, 3, "the greeting count and its manual change come back too");
+
+        // Long after the last activity, the channel starts a new stream.
+        let old = now_ms() - TWITCH_RESUME_MS - 60_000;
+        core.db().conn().execute("UPDATE streams SET first_seen_ms = ?1", [old]).unwrap();
+        core.db().conn().execute("UPDATE messages SET created_ms = ?1", [old]).unwrap();
+        assert_ne!(core.twitch_stream_id("yui"), first);
     }
 
     #[test]
