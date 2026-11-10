@@ -183,7 +183,7 @@ impl Engine {
         }
         if !self.installed() {
             self.update(|s| s.running = false);
-            return Err("VOICEVOXに接続できません。「読み上げ」タブでVOICEVOXエンジンを導入するか、VOICEVOXを起動してください".into());
+            return Err("VOICEVOXに接続できません。「読み上げ・AI返答」タブでVOICEVOXエンジンを導入するか、VOICEVOXを起動してください".into());
         }
         self.spawn()?;
         self.update(|s| s.status = "VOICEVOX エンジンを起動中…".into());

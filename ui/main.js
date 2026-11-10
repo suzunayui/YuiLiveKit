@@ -86,15 +86,26 @@ function readList(key) {
   }
 }
 
+// Tabs that were merged into one: a tab remembered from an older version opens its new home.
+const MERGED_TABS = { participants: 'tools', ohayo: 'tools', speech: 'voice', ai: 'voice', emoji: 'voice', look: 'obs' };
+
 function selectTab(name) {
-  // A hidden tab, or one remembered from an older version, falls back to the first shown tab.
+  name = MERGED_TABS[name] || name;
+  // A hidden tab, or one that no longer exists, falls back to the first shown tab.
   const target = tabButtons().find(tab => tab.dataset.tab === name && !tab.hidden) || tabButtons().find(tab => !tab.hidden);
   name = target.dataset.tab;
   for (const tab of tabButtons()) tab.setAttribute('aria-selected', String(tab.dataset.tab === name));
   for (const panel of document.querySelectorAll('[data-panel]')) panel.hidden = panel.dataset.panel !== name;
   remember('tab', name);
   if (name === 'obs') refreshPlugin();
-  if ((name === 'speech' || name === 'ai') && !speakersLoaded) loadSpeakersNow();
+  if (name === 'voice' && !speakersLoaded) loadSpeakersNow();
+}
+
+// Settings that are set once and then left alone sit in folding cards, closed until asked for.
+// Each remembers whether it was left open.
+for (const fold of document.querySelectorAll('details.fold')) {
+  fold.open = recall(`fold:${fold.id}`) === 'open';
+  fold.addEventListener('toggle', () => remember(`fold:${fold.id}`, fold.open ? 'open' : 'closed'));
 }
 
 let speakersLoaded = false;
@@ -105,13 +116,16 @@ async function loadSpeakersNow() {
 }
 for (const tab of tabButtons()) tab.addEventListener('click', () => selectTab(tab.dataset.tab));
 
-// Tabs can be dragged into the order the user wants, and unused ones hidden. Both are kept in
-// this window's storage. Tabs that are new since the order was saved keep their place at the end.
+// Tabs can be dragged into the order the user wants within their group, and unused ones hidden.
+// Both are kept in this window's storage. Tabs that are new since the order was saved keep
+// their place at the end of their group.
 function applyTabOrder() {
   const order = readList('tab-order');
-  const tabs = tabButtons();
-  const rank = tab => (order.includes(tab.dataset.tab) ? order.indexOf(tab.dataset.tab) : order.length + tabs.indexOf(tab));
-  $('tab-buttons').append(...tabs.sort((a, b) => rank(a) - rank(b)));
+  for (const group of document.querySelectorAll('.tab-group')) {
+    const tabs = [...group.querySelectorAll('button[data-tab]')];
+    const rank = tab => (order.includes(tab.dataset.tab) ? order.indexOf(tab.dataset.tab) : order.length + tabs.indexOf(tab));
+    group.append(...tabs.sort((a, b) => rank(a) - rank(b)));
+  }
 }
 
 function tabLabel(tab) {
@@ -121,6 +135,10 @@ function tabLabel(tab) {
 function renderTabVisibility() {
   const hidden = readList('tab-hidden');
   for (const tab of tabButtons()) tab.hidden = hidden.includes(tab.dataset.tab);
+  // A group whose tabs are all hidden takes its heading with it.
+  for (const group of document.querySelectorAll('.tab-group')) {
+    group.hidden = [...group.querySelectorAll('button[data-tab]')].every(tab => tab.hidden);
+  }
   const shown = tabButtons().filter(tab => !tab.hidden).length;
   $('tab-visibility').replaceChildren(...tabButtons().map(tab => {
     const box = element('input');
@@ -157,7 +175,8 @@ $('tab-buttons').addEventListener('dragover', event => {
   if (!draggedTab) return;
   event.preventDefault();
   const over = event.target.closest('button');
-  if (!over || over === draggedTab) return;
+  // Tabs stay in their own group.
+  if (!over || over === draggedTab || over.parentNode !== draggedTab.parentNode) return;
   const after = event.clientY > over.getBoundingClientRect().top + over.offsetHeight / 2;
   over.parentNode.insertBefore(draggedTab, after ? over.nextSibling : over);
 });
@@ -393,7 +412,6 @@ function renderToolSettings(settings) {
   renderKeywordRows('ohayo-keywords', settings.ohayo_keywords);
 }
 $('ohayo-keyword-add').addEventListener('click', () => addKeywordRow('ohayo-keywords').focus());
-$('ohayo-keywords-save').addEventListener('click', () => saveToolSettings('ohayo-keywords-result'));
 $('participant-keyword-save').addEventListener('click', () => saveToolSettings('participant-keyword-result'));
 
 // --- Support ---------------------------------------------------------------------------
@@ -713,6 +731,8 @@ $('speech-ng-add').addEventListener('click', () => addKeywordRow('speech-ng').fo
 // --- VOICEVOX engine -------------------------------------------------------------------
 
 function renderVoicevox(state) {
+  // With nothing to speak with, the way to get it should be in plain sight.
+  if (!state.installed && !state.running && recall('fold:fold-voicevox') !== 'closed') $('fold-voicevox').open = true;
   const version = state.installed_version ? `（導入した版 ${state.installed_version}）` : '';
   $('voicevox-state').textContent = state.busy ? '処理中'
     : state.running ? `接続しています${version}`
@@ -844,6 +864,8 @@ function options(select, list, value) {
 }
 
 function renderRuntime(runtime) {
+  // Until subtitles and translation are both installed, installing is the first thing to do here.
+  if (!(runtime.speech && runtime.translation) && recall('fold:fold-install') !== 'closed') $('fold-install').open = true;
   $('runtime-status').textContent = runtime.status;
   const label = (done, text) => (done ? `${text}（導入済み）` : text);
   $('install-speech').textContent = label(runtime.speech, '音声字幕を導入（約100MB）');

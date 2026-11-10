@@ -20,7 +20,20 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 main > section { display: grid; gap: 12px; }
 main > section[hidden] { display: none; }
 #tabs { display: flex; flex-direction: column; gap: 12px; padding: 12px 8px; overflow-y: auto; border-right: 1px solid var(--line); }
-#tab-buttons { display: flex; flex-direction: column; gap: 2px; }
+#tab-buttons { display: flex; flex-direction: column; gap: 14px; }
+.tab-group { display: flex; flex-direction: column; gap: 2px; }
+.tab-group[hidden] { display: none; }
+.tab-group-title { margin: 0 0 2px; padding: 0 12px; font-size: 12px; color: var(--muted); }
+/* Cards that fold away: settings touched once and then left alone. */
+details.fold > summary { display: flex; align-items: baseline; gap: 10px; cursor: pointer; list-style: none; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::before { content: "▸"; color: var(--muted); width: 1em; flex: none; }
+details.fold[open] > summary::before { content: "▾"; }
+details.fold > summary h2 { margin: 0; }
+details.fold[open] > summary { margin-bottom: 10px; }
+.fold-note { font-size: 13px; font-weight: 400; color: var(--muted); }
+details.fold.inner { margin: 10px 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
+details.fold.inner > summary { font-weight: 700; font-size: 14px; }
 #tab-buttons button[hidden] { display: none; }
 #tab-settings { margin-top: auto; font-size: 13px; color: var(--muted); }
 #tab-settings summary { cursor: pointer; padding: 4px 12px; }

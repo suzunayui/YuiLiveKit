@@ -124,6 +124,11 @@ const fakeTauri = ({ state }) => {
   };
 };
 
+/** Opens a folding card, if it is closed, so what is inside can be used. */
+async function unfold(page, id) {
+  if (!(await page.$eval(`#${id}`, fold => fold.open))) await page.click(`#${id} > summary`);
+}
+
 async function open(browser, server, state) {
   const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
   const errors = [];
@@ -201,47 +206,65 @@ test('top bar, comments, greetings and the history import', async () => {
     await page.evaluate(() => window.fire('chat', { type: 'deleted', keys: ['youtube:2'] }));
     assert.equal(await page.$('#comments [data-key="youtube:2"]'), null, 'deleted comments leave the list (K1)');
 
-    await page.click('[data-tab="ohayo"]');
+    await page.click('[data-tab="tools"]');
     await page.click('#ohayo-plus');
     await page.waitForFunction(() => document.getElementById('ohayo-count').textContent === '3');
     await page.click('#ohayo-reset');
     await page.waitForFunction(() => document.getElementById('ohayo-count').textContent === '0');
+    // Keywords are set once and left alone, so they sit in a folding card that starts closed.
+    assert.equal(await page.isVisible('#ohayo-keyword-add'), false);
+    await unfold(page, 'fold-keywords');
     assert.deepEqual(await page.$$eval('#ohayo-keywords input', boxes => boxes.map(b => b.value)), ['おはよ', 'おっは'], 'one box per keyword');
     await page.click('#ohayo-keyword-add');
     await page.keyboard.type('ohayo');
-    await page.click('#ohayo-keywords-save');
-    await page.waitForFunction(() => document.getElementById('ohayo-keywords-result').textContent === '保存しました');
+    await page.click('#participant-keyword-save');
+    await page.waitForFunction(() => document.getElementById('participant-keyword-result').textContent === '保存しました');
     assert.deepEqual((await page.evaluate(() => window.calls.find(c => c[0] === 'set_tool_settings')))[1].ohayoKeywords, ['おはよ', 'おっは', 'ohayo']);
     await page.click('[data-tab="comments"]');
     await page.click('#legacy-import');
     await page.waitForFunction(() => document.querySelector('#legacy-result').textContent.includes('42件'));
 
-    // Tabs move by dragging, and the order is still there after a restart.
-    const tabOrder = () => page.$$eval('#tabs button', tabs => tabs.map(t => t.dataset.tab));
-    await page.locator('[data-tab="ohayo"]').dragTo(page.locator('[data-tab="comments"]'), { targetPosition: { x: 20, y: 3 } });
-    assert.deepEqual((await tabOrder()).slice(0, 3), ['ohayo', 'comments', 'support']);
+    // Tabs sit in three groups. They move by dragging within their group, and the order is
+    // still there after a restart.
+    const tabOrder = () => page.$$eval('#tab-buttons button', tabs => tabs.map(t => t.dataset.tab));
+    assert.deepEqual(await page.$$eval('.tab-group-title', t => t.map(x => x.textContent)), ['配信中に見る', '声と字幕', 'OBS']);
+    assert.deepEqual(await tabOrder(), ['comments', 'support', 'tools', 'voice', 'media', 'obs']);
+    await page.locator('[data-tab="tools"]').dragTo(page.locator('[data-tab="comments"]'), { targetPosition: { x: 20, y: 3 } });
+    assert.deepEqual(await tabOrder(), ['tools', 'comments', 'support', 'voice', 'media', 'obs']);
     assert.equal(await page.isVisible('[data-panel="comments"]'), true, 'dragging does not switch tabs');
+    await page.locator('[data-tab="obs"]').dragTo(page.locator('[data-tab="comments"]'), { targetPosition: { x: 20, y: 3 } });
+    assert.deepEqual(await tabOrder(), ['tools', 'comments', 'support', 'voice', 'media', 'obs'], 'a tab stays in its group');
     await page.reload();
     await page.waitForFunction(() => window.calls.some(c => c[0] === 'get_state'));
-    assert.deepEqual((await tabOrder()).slice(0, 3), ['ohayo', 'comments', 'support'], 'the order is remembered');
-    await page.evaluate(() => localStorage.setItem('tab-order', JSON.stringify(['obs', 'gone'])));
+    assert.deepEqual(await tabOrder(), ['tools', 'comments', 'support', 'voice', 'media', 'obs'], 'the order is remembered');
+    await page.evaluate(() => localStorage.setItem('tab-order', JSON.stringify(['media', 'gone', 'voice'])));
     await page.reload();
     await page.waitForFunction(() => window.calls.some(c => c[0] === 'get_state'));
-    assert.deepEqual((await tabOrder()).slice(0, 3), ['obs', 'comments', 'support'], 'unknown names are ignored and new tabs keep their place');
+    assert.deepEqual(await tabOrder(), ['comments', 'support', 'tools', 'media', 'voice', 'obs'], 'unknown names are ignored and new tabs keep their place');
+
+    // A tab remembered from before the tabs were merged opens its new home, and a folding
+    // card stays the way it was left.
+    await page.click('[data-tab="tools"]');
+    await unfold(page, 'fold-keywords');
+    await page.evaluate(() => localStorage.setItem('tab', 'ohayo'));
+    await page.reload();
+    await page.waitForFunction(() => window.calls.some(c => c[0] === 'get_state'));
+    assert.equal(await page.isVisible('[data-panel="tools"]'), true);
+    assert.equal(await page.isVisible('#ohayo-keyword-add'), true, 'the keywords card is still open');
 
     // Unused tabs can be hidden and shown again, and stay hidden after a restart.
     await page.click('#tab-settings summary');
-    await page.click('[data-tab="ohayo"]');
-    await page.uncheck('#tab-visibility input[data-show="ohayo"]');
-    assert.equal(await page.isVisible('[data-tab="ohayo"]'), false, 'the tab is hidden');
-    assert.equal(await page.isVisible('[data-panel="comments"]'), false);
-    assert.equal(await page.isVisible('[data-panel="obs"]'), true, 'hiding the open tab moves to the first shown one');
+    await page.uncheck('#tab-visibility input[data-show="tools"]');
+    assert.equal(await page.isVisible('[data-tab="tools"]'), false, 'the tab is hidden');
+    assert.equal(await page.isVisible('[data-panel="comments"]'), true, 'hiding the open tab moves to the first shown one');
+    await page.uncheck('#tab-visibility input[data-show="obs"]');
+    assert.deepEqual(await page.$$eval('.tab-group-title', t => t.filter(x => x.offsetParent).map(x => x.textContent)), ['配信中に見る', '声と字幕'], 'an empty group hides its heading');
     await page.reload();
     await page.waitForFunction(() => window.calls.some(c => c[0] === 'get_state'));
-    assert.equal(await page.isVisible('[data-tab="ohayo"]'), false, 'still hidden after a restart');
+    assert.equal(await page.isVisible('[data-tab="tools"]'), false, 'still hidden after a restart');
     await page.click('#tab-settings summary');
-    await page.check('#tab-visibility input[data-show="ohayo"]');
-    assert.equal(await page.isVisible('[data-tab="ohayo"]'), true, 'shown again');
+    await page.check('#tab-visibility input[data-show="tools"]');
+    assert.equal(await page.isVisible('[data-tab="tools"]'), true, 'shown again');
     await page.evaluate(() => localStorage.setItem('tab-hidden', JSON.stringify([...document.querySelectorAll('#tab-buttons button')].map(b => b.dataset.tab).filter(t => t !== 'support'))));
     await page.reload();
     await page.waitForFunction(() => window.calls.some(c => c[0] === 'get_state'));
@@ -269,7 +292,7 @@ test('support, participants, appearance and OBS tabs', async () => {
     await page.evaluate(m => window.fire('chat', m), message('youtube:13', { kind: 'paid', amount_text: '$5.00', author: 'New' }));
     await page.waitForFunction(() => document.querySelectorAll('#support li').length === 1);
 
-    await page.click('[data-tab="participants"]');
+    await page.click('[data-tab="tools"]');
     assert.deepEqual(await page.$$eval('#participants li .name', n => n.map(x => x.textContent)), ['First', 'Second', 'Done']);
     await page.click('#participants li:first-child .actions button:first-child');
     await page.waitForFunction(() => document.querySelector('#participants li:first-child').classList.contains('done'));
@@ -277,6 +300,7 @@ test('support, participants, appearance and OBS tabs', async () => {
     assert.deepEqual(await page.$$eval('#participants li .name', n => n.map(x => x.textContent)), ['Second']);
     // Keywords: + adds a box, − removes one, and the last box cannot be removed.
     const keywordBoxes = () => page.$$eval('#participant-keywords input', boxes => boxes.map(b => b.value));
+    await unfold(page, 'fold-keywords');
     assert.deepEqual(await keywordBoxes(), ['参加希望']);
     assert.equal(await page.isDisabled('#participant-keywords .keyword-row button'), true, 'the only box stays');
     await page.click('#participant-keyword-add');
@@ -299,7 +323,7 @@ test('support, participants, appearance and OBS tabs', async () => {
     await page.evaluate(() => window.fire('chat', { type: 'participants', items: [] }));
     assert.equal(await page.$$eval('#participants li', n => n.length), 0, 'the list follows the app');
 
-    await page.click('[data-tab="look"]');
+    await page.click('[data-tab="obs"]');
     assert.deepEqual(await page.$$eval('.look-part legend', l => l.map(x => x.textContent)), ['参加管理', 'おはよう', '通常コメント', '字幕', 'ニコニコ風']);
     const size = '.look-part[data-part="comments"] input[data-field="font_size"]';
     await page.fill(size, '999');
@@ -317,13 +341,13 @@ test('support, participants, appearance and OBS tabs', async () => {
     await page.evaluate(a => window.fire('chat', { type: 'appearance', ...a, niconico: { ...a.niconico, color: '#ff0000' } }), defaultAppearance);
     assert.equal(await page.inputValue('.look-part[data-part="niconico"] input[data-field="color"]'), '#ff0000', 'the form follows changes');
 
-    await page.click('[data-tab="obs"]');
     await page.waitForFunction(() => document.getElementById('plugin-state').textContent === '未導入');
     await page.click('#plugin-install');
     await page.waitForFunction(() => document.getElementById('plugin-result').textContent.startsWith('導入しました'));
     assert.deepEqual(await page.$$eval('#part-urls tbody tr', rows => rows.map(r => r.children[1].textContent)),
       defaultParts.map(p => p.url), 'each part has its own URL');
     assert.equal(await page.textContent('#part-urls tbody tr:nth-child(3) td:nth-child(3)'), '720×636');
+    await unfold(page, 'fold-obs-manual');
     const dragged = await page.evaluate(() => {
       const link = document.querySelector('#part-urls tbody tr:nth-child(3) a.drag');
       const data = new DataTransfer();
@@ -345,7 +369,7 @@ test('reading aloud, AI replies, emoji and viewer settings', async () => {
   const browser = await chromium.launch({ channel: 'msedge' });
   try {
     const { page, errors } = await open(browser, server, baseState());
-    await page.click('[data-tab="speech"]');
+    await page.click('[data-tab="voice"]');
     await page.waitForFunction(() => document.getElementById('speech-speaker-pick').textContent === 'ずんだもん（ノーマル）');
     assert.equal(await page.inputValue('#speech-speaker'), '3');
     await page.check('#speech-enabled');
@@ -381,6 +405,7 @@ test('reading aloud, AI replies, emoji and viewer settings', async () => {
     await page.waitForFunction(() => window.calls.some(c => c[0] === 'uninstall_voicevox'));
 
     // Replacements: a word and its reading per row. NG words: one per row.
+    await unfold(page, 'fold-speech-words');
     await page.fill('#speech-replacements .keyword-row:first-child input:first-child', 'www');
     await page.fill('#speech-replacements .keyword-row:first-child input.reading-of', 'わらわら');
     await page.click('#speech-replacement-add');
@@ -413,10 +438,9 @@ test('reading aloud, AI replies, emoji and viewer settings', async () => {
     assert.equal(await page.inputValue('#comments li:first-child input.reading'), 'ゆいちゃん', 'Escape puts back the saved reading');
     await page.click('#comments li .actions button:last-child');
     await page.waitForFunction(() => document.querySelector('#comments li .actions button:last-child').textContent === 'ブロック解除');
-    await page.click('[data-tab="speech"]');
+    await page.click('[data-tab="voice"]');
     assert.match(await page.textContent('#viewer-list'), /youtube:UC1: 読み方「ゆいちゃん」、ブロック中/);
 
-    await page.click('[data-tab="ai"]');
     assert.equal(await page.textContent('#ai-key-state'), 'キーは未設定です');
     await page.fill('#ai-key', 'sk-test');
     await page.click('#ai-key-save');
@@ -434,7 +458,7 @@ test('reading aloud, AI replies, emoji and viewer settings', async () => {
     assert.deepEqual([ai.enabled, ai.triggers, ai.persona], [true, ['GPT', '教えて'], '関西弁で']);
     assert.ok(!JSON.stringify(ai).includes('sk-test'), 'the key is never part of the settings');
 
-    await page.click('[data-tab="emoji"]');
+    await unfold(page, 'fold-emoji');
     await page.fill('#emoji-list input', 'てをふる');
     await page.dispatchEvent('#emoji-list input', 'change');
     await page.waitForFunction(() => window.calls.some(c => c[0] === 'set_emoji' && c[1].reading === 'てをふる'));
