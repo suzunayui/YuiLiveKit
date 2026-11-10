@@ -554,7 +554,7 @@ $('plugin-install').addEventListener('click', () => attempt('plugin-result', asy
   $('plugin-result').textContent = '導入中…';
   await invoke('install_obs_plugin');
   await refreshPlugin();
-}, '導入しました。OBS を起動すると、今のシーンに YuiLiveKit のグループが追加されます。'));
+}, '導入しました。OBS を起動すると、今のシーンに YuiLiveKit のソースが5つ追加されます。'));
 function renderPartUrls() {
   const body = $('part-urls').tBodies[0];
   body.replaceChildren();

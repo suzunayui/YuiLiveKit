@@ -45,7 +45,7 @@ test('the overlay follows chat, deletions, new collections and app restarts', as
   await demo.ready;
   const browser = await chromium.launch({ channel: 'msedge' });
   try {
-    const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await demo.send({ op: 'start', stream: 'v1' });
@@ -79,16 +79,18 @@ test('the overlay follows chat, deletions, new collections and app restarts', as
     await demo.send({ op: 'message', id: 'now', author: 'Now', author_id: 'UC5', text: 'new stream' });
     await page.waitForFunction(() => document.querySelectorAll('#comments .msg').length === 1);
 
-    // Starting again on the same stream: the overlay does not show its comments a second time,
-    // not even after OBS reloads the page.
+    // Starting again on the same stream (the app was restarted mid-stream): the list gets its
+    // comments back, and a comment the platform sends again is not listed twice.
     await demo.send({ op: 'start', stream: 'v2' });
-    await page.waitForFunction(() => document.querySelectorAll('#comments .msg').length === 0);
+    await page.waitForFunction(() => document.querySelector('#comments .msg')?.dataset.key === 'youtube:now');
+    assert.deepEqual(await keys(page), ['youtube:now'], 'the earlier comment is back on the list');
     await demo.send({ op: 'message', id: 'now', author: 'Now', author_id: 'UC5', text: 'new stream' });
     await demo.send({ op: 'message', id: 'again', author: 'Now', author_id: 'UC5', text: 'after the second start' });
-    await page.waitForFunction(() => document.querySelectorAll('#comments .msg').length === 1);
+    await page.waitForFunction(() => document.querySelectorAll('#comments .msg').length === 2);
+    assert.deepEqual(await keys(page), ['youtube:now', 'youtube:again']);
     await page.reload();
-    await page.waitForFunction(() => document.querySelectorAll('#comments .msg').length === 1);
-    assert.deepEqual(await keys(page), ['youtube:again']);
+    await page.waitForFunction(() => document.querySelectorAll('#comments .msg').length === 2);
+    assert.deepEqual(await keys(page), ['youtube:now', 'youtube:again'], 'and after OBS reloads the page');
 
     await demo.stop();
     await page.waitForFunction(() => document.querySelectorAll('#comments .msg').length === 0);

@@ -26,8 +26,6 @@ pub const PARTS: [Part; 5] = [
     Part { id: "niconico", label: "ニコニコ風", source: "YuiLiveKit - ニコニコ風", width: 1920, height: 880, x: 0, y: 100 },
 ];
 
-pub const GROUP: &str = "YuiLiveKit";
-
 pub fn part(id: &str) -> Option<&'static Part> {
     PARTS.iter().find(|p| p.id == id)
 }

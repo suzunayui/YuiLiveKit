@@ -67,7 +67,7 @@ fn write_obs_source_file(dir: &Path, port: u16) -> std::io::Result<()> {
             serde_json::json!({"name": p.source, "url": part_url(port, p.id), "width": p.width, "height": p.height, "x": p.x, "y": p.y})
         })
         .collect();
-    let file = serde_json::json!({"group": appearance::GROUP, "canvas_width": CANVAS.0, "canvas_height": CANVAS.1, "sources": sources});
+    let file = serde_json::json!({"canvas_width": CANVAS.0, "canvas_height": CANVAS.1, "sources": sources});
     std::fs::write(dir.join("obs-source.json"), serde_json::to_vec_pretty(&file)?)
 }
 

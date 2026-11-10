@@ -153,6 +153,7 @@ function showTranslation(key, ja) {
   translations.set(key, ja);
   const line = shown.get(key)?.querySelector('.translation');
   if (line) { line.textContent = ja; line.hidden = false; }
+  trimComments();
 }
 
 function clearTranslations() {
@@ -171,14 +172,24 @@ function showSubtitle(ja, en, ageMs = 0) {
   if (visible) subtitleTimer = setTimeout(() => showSubtitle('', ''), remaining);
 }
 
+/** Keeps the newest comments: at most the set number, and only as many as fit the source, so
+ *  the oldest one shown is never cut off at the top. */
 function trimComments() {
   const list = $('comments');
   const max = look ? look.comments.max : 12;
-  while (list.children.length > max) {
+  const dropOldest = () => {
     shown.delete(list.firstElementChild.dataset.key);
     list.firstElementChild.remove();
-  }
+  };
+  while (list.children.length > max) dropOldest();
+  // The list is anchored to the bottom, so what does not fit sticks out above its top edge.
+  const top = list.getBoundingClientRect().top;
+  while (list.children.length > 1 && list.firstElementChild.getBoundingClientRect().top < top - 0.5) dropOldest();
 }
+// Comments also grow after they are shown: a translation arrives, an emoji image loads, or OBS
+// resizes the source.
+addEventListener('resize', trimComments);
+$('comments').addEventListener('load', trimComments, true);
 
 function addComment(message) {
   if (shown.has(message.key)) return;
@@ -196,16 +207,74 @@ function emojiOnly(message) {
   return emoji > 0 && emoji <= 5 && parts.every(p => p.type === 'emoji' || (p.type === 'text' && !p.text.trim()));
 }
 
+// Each lane remembers the comment that last entered it: when its tail is fully on screen, and
+// when it leaves. Times are in milliseconds, from performance.now().
+let lanes = [];
+
+/** Picks a lane for a comment `width` wide, or returns -1 when none is free. A lane is free once
+ *  the comment before has fully entered and the new one, which may be faster, cannot catch it
+ *  before it leaves. Free lanes are picked at random, to keep the scattered look. With `force`,
+ *  a full screen gives the lane that frees up first, and the comments overlap for a moment. */
+function pickLane(width, laneHeight, area, force) {
+  const count = Math.max(1, Math.floor(area.height / laneHeight));
+  if (lanes.length !== count) lanes = Array.from({ length: count }, (_, i) => lanes[i] || { entered: 0, gone: 0 });
+  const now = performance.now();
+  const duration = area.duration * 1000;
+  const reachesLeftEdge = now + (duration * area.width) / (area.width + width);
+  const free = lanes.map((lane, i) => i).filter(i => lanes[i].entered <= now && lanes[i].gone <= reachesLeftEdge);
+  if (!free.length && !force) return -1;
+  const index = free.length
+    ? free[Math.floor(Math.random() * free.length)]
+    : lanes.reduce((best, lane, i) => (lane.entered < lanes[best].entered ? i : best), 0);
+  // A little after the tail is in, so two comments never touch end to end.
+  lanes[index] = { entered: now + (duration * (width + 40)) / (area.width + width), gone: now + duration };
+  return index;
+}
+
+// Comments that found every lane taken wait here, oldest first, for a lane to free up. That is
+// a second or two in a busy moment. A comment that has waited too long, or a queue that has
+// grown too long, flies anyway and overlaps, so a flood never falls far behind the chat.
+const waiting = [];
+// As a share of the time a comment takes to cross: a lane frees up well within this.
+const MAX_WAIT_SHARE = 0.6;
+const MAX_WAITING = 40;
+let waitTimer = null;
+
 function fly(content, key, { color, onDone } = {}) {
-  const area = { width: innerWidth, height: innerHeight, duration: look.niconico.duration };
   const node = element('div', 'bullet');
   if (color) node.style.color = color;
   node.append(content);
+  waiting.push({ node, key, onDone, since: performance.now() });
+  startWaiting();
+}
+
+function startWaiting() {
+  clearTimeout(waitTimer);
+  waitTimer = null;
+  while (waiting.length) {
+    const next = waiting[0];
+    const longest = look.niconico.duration * 1000 * MAX_WAIT_SHARE;
+    const force = performance.now() - next.since > longest || waiting.length > MAX_WAITING;
+    if (!start(next, force)) break;
+    waiting.shift();
+  }
+  if (waiting.length) waitTimer = setTimeout(startWaiting, 100);
+}
+
+/** Starts a comment across the screen if a lane is free (or `force`); says whether it did. */
+function start({ node, key, onDone }, force) {
+  const area = { width: innerWidth, height: innerHeight, duration: look.niconico.duration };
+  // It has to be on the page to be measured.
   $('niconico').append(node);
-  if (key) bullets.set(key, node);
   const width = node.offsetWidth;
-  const top = Math.random() * Math.max(area.height - node.offsetHeight, 0);
-  node.style.top = `${top}px`;
+  const laneHeight = node.offsetHeight;
+  const lane = pickLane(width, laneHeight, area, force);
+  if (lane < 0) {
+    node.remove();
+    return false;
+  }
+  if (key) bullets.set(key, node);
+  node.style.top = `${lane * laneHeight}px`;
   const animation = node.animate(
     [{ transform: `translateX(${area.width}px)` }, { transform: `translateX(${-width}px)` }],
     { duration: area.duration * 1000, easing: 'linear' },
@@ -217,6 +286,7 @@ function fly(content, key, { color, onDone } = {}) {
     if (key) bullets.delete(key);
     onDone?.();
   };
+  return true;
 }
 
 function drop(content, key) {
@@ -276,6 +346,8 @@ function remove(keys) {
     bullets.get(key)?.remove();
     bullets.delete(key);
   }
+  // A deleted comment that is still waiting for a lane never flies.
+  for (let i = waiting.length - 1; i >= 0; i--) if (keys.includes(waiting[i].key)) waiting.splice(i, 1);
 }
 
 function clear() {
@@ -283,6 +355,7 @@ function clear() {
   $('niconico').replaceChildren();
   shown.clear();
   bullets.clear();
+  waiting.length = 0;
   renderParticipants([]);
   renderOhayo({ count: 0 });
   translations.clear();
@@ -303,6 +376,9 @@ function connect() {
       if (data.subtitle) showSubtitle(data.subtitle.ja, data.subtitle.en, data.subtitle.age_ms);
       renderParticipants(data.participants);
       renderOhayo(data.ohayo);
+    } else if (data.type === 'restored') {
+      // Starting again on a stream: its comments go back on the list, but they do not fly again.
+      if (PART === 'comments') data.messages.forEach(addComment);
     } else if (data.type === 'message') { if (PART === 'comments') addComment(data); addBullet(data); }
     else if (data.type === 'deleted') remove(data.keys);
     else if (data.type === 'reset') clear();

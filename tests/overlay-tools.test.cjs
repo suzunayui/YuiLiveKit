@@ -108,6 +108,81 @@ test('each part is its own page: niconico, participants and greetings', async ()
   }
 });
 
+test('flying comments keep to lanes, and the comment list never shows a cut-off comment', async () => {
+  const demo = startDemo();
+  await demo.ready;
+  const browser = await chromium.launch({ channel: 'msedge' });
+  try {
+    // The default crossing time, so lanes free up as fast as they do for real.
+    await demo.send({ op: 'save_appearance', appearance: appearance({ niconico: { duration: 8 } }) });
+    await demo.send({ op: 'start', stream: 'v1' });
+    const errors = [];
+    const nico = await openPart(browser, 'niconico', errors, { width: 1920, height: 880 });
+    // The list is shorter than twelve comments are tall, as it is at the plugin's default size.
+    const comments = await openPart(browser, 'comments', errors, { width: 720, height: 400 });
+    const texts = ['wwwww', 'かわいい', 'ないすー', 'これはニコニコ風に流れる少し長めのコメントです', '888888', 'こんにちは', '草', 'おつかれさま'];
+    for (const [i, text] of texts.entries()) await demo.send({ op: 'message', id: `b${i}`, author: 'A', author_id: `UC${i}`, text });
+    await nico.waitForFunction(count => document.querySelectorAll('#niconico .bullet').length === count, texts.length);
+    await nico.waitForTimeout(300);
+    const overlaps = await nico.$$eval('#niconico .bullet', bullets => {
+      const boxes = bullets.map(b => ({ text: b.textContent, ...b.getBoundingClientRect().toJSON() }));
+      const hit = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom - 1 && b.top < a.bottom - 1;
+      return boxes.flatMap((a, i) => boxes.slice(i + 1).filter(b => hit(a, b)).map(b => `${a.text} × ${b.text}`));
+    });
+    assert.deepEqual(overlaps, [], 'comments arriving together do not overlap');
+    assert.ok(await nico.$$eval('#niconico .bullet', b => b.every(x => x.getBoundingClientRect().bottom <= innerHeight + 1)), 'every lane is inside the source');
+
+    // More at once than there are lanes: the rest wait for a lane instead of overlapping, and
+    // a deleted comment that is still waiting never flies.
+    const overlapping = () => nico.$$eval('#niconico .bullet', bullets => {
+      const boxes = bullets.map(b => b.getBoundingClientRect());
+      const hit = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom - 1 && b.top < a.bottom - 1;
+      return boxes.some((a, i) => boxes.slice(i + 1).some(b => hit(a, b)));
+    });
+    await nico.evaluate(() => {
+      window.flown = new Set();
+      new MutationObserver(() => { for (const b of document.querySelectorAll('#niconico .bullet')) window.flown.add(b.textContent); })
+        .observe(document.getElementById('niconico'), { childList: true });
+    });
+    for (let i = 0; i < 14; i++) await demo.send({ op: 'message', id: `flood${i}`, author: 'A', author_id: `UF${i}`, text: `まとめて${i}` });
+    await demo.send({ op: 'remove', id: 'flood13' });
+    assert.equal(await overlapping(), false, 'a flood does not overlap');
+    assert.ok(await nico.$$eval('#niconico .bullet', b => b.length) < texts.length + 13, 'some wait their turn');
+    await nico.waitForFunction(() => [...Array(13).keys()].every(i => window.flown.has(`まとめて${i}`)), null, { timeout: 15000 });
+    assert.equal(await overlapping(), false, 'nor do the ones that waited');
+    assert.equal(await nico.evaluate(() => window.flown.has('まとめて13')), false, 'the deleted one never flew');
+
+    await comments.waitForFunction(last => document.querySelector('#comments .msg:last-child')?.dataset.key === last, 'youtube:flood12');
+    const cut = async () => comments.$$eval('#comments .msg', rows => rows.filter(r => r.getBoundingClientRect().top < -0.5).map(r => r.dataset.key));
+    assert.deepEqual(await cut(), [], 'no comment is cut off at the top');
+    const shownBefore = await comments.$$eval('#comments .msg', rows => rows.length);
+    assert.ok(shownBefore >= 3 && shownBefore < texts.length, `as many as fit are shown (${shownBefore})`);
+    // A translation makes its comment taller; the list makes room again.
+    await demo.send({ op: 'translate', key: 'youtube:flood12', ja: '日本語の訳が付くと、このコメントは一行ぶん高くなります' });
+    await comments.waitForFunction(() => !document.querySelector('[data-key="youtube:flood12"] .translation').hidden);
+    assert.deepEqual(await cut(), [], 'still none after a comment grows');
+    // A bigger font from the settings does the same.
+    await demo.send({ op: 'save_appearance', appearance: appearance({ comments: { font_size: 40 }, niconico: { duration: 8 } }) });
+    await comments.waitForFunction(() => getComputedStyle(document.querySelector('#comments .msg')).fontSize === '40px');
+    assert.deepEqual(await cut(), [], 'still none after the font grows');
+    assert.ok(await comments.$$eval('#comments .msg', rows => rows.length) < shownBefore);
+
+    // Starting again on the same stream puts the comments back on the list, but none of them
+    // flies across the screen a second time.
+    await nico.waitForFunction(() => document.querySelectorAll('#niconico .bullet').length === 0, null, { timeout: 15000 });
+    await demo.send({ op: 'start', stream: 'v1' });
+    await comments.waitForFunction(() => document.querySelector('#comments .msg:last-child')?.dataset.key === 'youtube:flood12');
+    await nico.waitForTimeout(500);
+    assert.equal(await nico.$$eval('#niconico .bullet', b => b.length), 0, 'restored comments do not fly again');
+    await demo.send({ op: 'message', id: 'fresh', author: 'A', author_id: 'UN1', text: 'あたらしい' });
+    await nico.waitForFunction(() => [...document.querySelectorAll('#niconico .bullet')].some(b => b.textContent === 'あたらしい'));
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+    await demo.stop();
+  }
+});
+
 test('subtitles and comment translations on the overlay', async () => {
   const demo = startDemo();
   await demo.ready;

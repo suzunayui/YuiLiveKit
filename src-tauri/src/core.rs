@@ -47,8 +47,9 @@ pub enum Notice {
     /// A new collection started: drop what is shown.
     Reset,
     Message(Shown),
-    /// A stream that was collected before came back after a start. Only the settings window
-    /// shows these again; the overlay never repeats what it already showed.
+    /// A stream that was collected before came back after a start. The lists show these again
+    /// (the settings window, and the overlay's comment list); nothing that plays is repeated:
+    /// they do not fly across the overlay, and are not read aloud, answered or translated.
     Restored { messages: Vec<Shown>, support: Vec<Support> },
     Deleted { keys: Vec<String> },
     Status { platform: Platform, status: String, detail: Option<String> },
@@ -250,13 +251,6 @@ impl Core {
         self.db().recent(&self.streams(), limit).unwrap_or_default()
     }
 
-    /// Like `snapshot`, but only what arrived since the current start: what the overlay
-    /// already showed before a restart is not shown again when it reloads.
-    pub fn overlay_snapshot(&self, limit: usize) -> Vec<Shown> {
-        let after = self.session.lock().unwrap().before_start_row;
-        self.db().select_shown(&self.streams(), &format!("AND m.id > {after}"), limit).unwrap_or_default()
-    }
-
     pub fn statuses(&self) -> BTreeMap<&'static str, Status> {
         self.session.lock().unwrap().statuses.clone()
     }
@@ -304,7 +298,7 @@ impl Core {
             (added, session.before_start_row)
         };
         self.refresh_ohayo();
-        // Starting again on the same stream: its stored chat goes back on the settings window.
+        // Starting again on the same stream: its stored chat goes back on the lists.
         // Re-delivered comments are already stored, so nothing else would bring them back.
         if added {
             let messages = self
@@ -1039,12 +1033,12 @@ mod tests {
     }
 
     #[test]
-    fn starting_again_on_a_stream_restores_it_on_the_settings_window_only() {
+    fn starting_again_on_a_stream_restores_its_lists_without_replaying_anything() {
         let core = Core::new(Db::open_in_memory().unwrap());
         core.reset_session();
         let stream = core.add_stream(Platform::Youtube, "v").unwrap();
         core.ingest(stream, batch(vec![message("1", "UC1", "参加希望"), message("2", "UC2", "hi")]));
-        assert_eq!(core.overlay_snapshot(10).len(), 2);
+        assert_eq!(core.snapshot(10).len(), 2);
 
         core.reset_session();
         let mut notices = core.subscribe();
@@ -1061,8 +1055,7 @@ mod tests {
         }
         assert_eq!(restored, Some(vec!["1".to_string(), "2".to_string()]));
         assert_eq!(participants, Some(1), "the waiting list comes back");
-        assert!(core.overlay_snapshot(10).is_empty(), "the overlay does not show them again after a reload");
-        assert_eq!(core.snapshot(10).len(), 2, "the settings window does");
+        assert_eq!(core.snapshot(10).len(), 2, "a list that reloads shows them too");
 
         // YouTube sends recent chat again on connecting; only what is really new is announced.
         core.ingest(stream, batch(vec![message("2", "UC2", "hi"), message("3", "UC3", "new")]));
@@ -1070,7 +1063,7 @@ mod tests {
             .filter_map(|n| if let Notice::Message(m) = n { Some(m.message.id) } else { None })
             .collect();
         assert_eq!(new, vec!["3"]);
-        assert_eq!(core.overlay_snapshot(10).iter().map(|s| s.message.id.as_str()).collect::<Vec<_>>(), vec!["3"]);
+        assert_eq!(core.snapshot(10).iter().map(|s| s.message.id.as_str()).collect::<Vec<_>>(), vec!["1", "2", "3"]);
 
         core.reset_session();
         let mut notices = core.subscribe();

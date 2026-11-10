@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Adds the YuiLiveKit overlay parts to OBS as browser sources in one group, so the user
- * needs neither OBS WebSocket nor a password. Each part is its own source, so where it
- * goes and what it sits in front of or behind are set in OBS.
+ * Adds the YuiLiveKit overlay parts to OBS as browser sources, so the user needs neither
+ * OBS WebSocket nor a password. Each part is its own source, placed straight in the scene
+ * and not in a group, so each can go in front of or behind any other source (comments
+ * behind a 3D model, flying comments in front of it) by dragging it in OBS's list.
  *
  * It also reloads those sources when the app starts. A browser source that loaded while
  * the app was not running shows an error page, and that page cannot reconnect by itself.
@@ -16,7 +17,6 @@
 
 OBS_DECLARE_MODULE()
 
-#define GROUP_NAME "YuiLiveKit"
 /* Written by the app in its data folder: %APPDATA%\<Tauri identifier>. */
 #define SOURCE_FILE "com.suzunayui.yuilivekit/obs-source.json"
 /* Which scene collections already got the parts once. */
@@ -103,7 +103,7 @@ static obs_source_t *get_or_create(const struct part *part)
 	return source;
 }
 
-/* Puts the parts in the current scene inside one group, creating what does not exist yet. */
+/* Puts the parts in the current scene, creating what does not exist yet. */
 static bool add_to_current_scene(void)
 {
 	obs_source_t *scene_source = obs_frontend_get_current_scene();
@@ -126,8 +126,7 @@ static bool add_to_current_scene(void)
 		scale = (float)(ovi.base_width / canvas_width);
 
 	bool ok = true;
-	obs_sceneitem_t *added[MAX_PARTS];
-	size_t added_count = 0;
+	int added_parts = 0;
 	/* Back to front: each new item goes on top of the ones before it. */
 	for (size_t i = 0; i < count; i++) {
 		if (obs_scene_find_source_recursive(scene, parts[i].name))
@@ -145,25 +144,11 @@ static bool add_to_current_scene(void)
 			vec2_set(&size, scale, scale);
 			obs_sceneitem_set_pos(item, &pos);
 			obs_sceneitem_set_scale(item, &size);
-			added[added_count++] = item;
+			added_parts++;
 		}
 		obs_source_release(source);
 	}
 
-	obs_sceneitem_t *group = obs_scene_get_group(scene, GROUP_NAME);
-	if (group) {
-		/* Parts the user removed and added back from the Tools menu join the existing group. */
-		for (size_t i = 0; i < added_count; i++)
-			obs_sceneitem_group_add_item(group, added[i]);
-	} else if (added_count) {
-		obs_source_t *taken = obs_get_source_by_name(GROUP_NAME);
-		if (taken)
-			blog(LOG_WARNING, LOG_PREFIX "'%s' is already used by another source; adding without a group", GROUP_NAME);
-		else
-			obs_scene_insert_group2(scene, GROUP_NAME, added, added_count, true);
-		obs_source_release(taken);
-	}
-	int added_parts = (int)added_count;
 	blog(LOG_INFO, LOG_PREFIX "added %d part(s) to scene '%s'", added_parts, obs_source_get_name(scene_source));
 
 	obs_data_release(file);
