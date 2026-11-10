@@ -8,7 +8,9 @@
   html, body { margin: 0; width: 100vw; height: 100vh; background: transparent; overflow: hidden;
     font-family: "Noto Sans JP", "Yu Gothic UI", "Meiryo", sans-serif; }
   .widget { position: absolute; inset: 0; overflow: hidden; }
-  .widget[hidden] { display: none; }
+  /* A source shows one part. `hidden` must win over the parts' own `display` below, which are
+     written with ids and would otherwise show the greeting count on every source. */
+  [hidden] { display: none !important; }
 
   #comments { display: flex; flex-direction: column; justify-content: flex-end; gap: 8px; }
   .msg { display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; border-radius: 16px; flex: none;
@@ -40,7 +42,6 @@
   #subtitles { display: flex; flex-direction: column; justify-content: flex-end; }
   #subtitles .box { background: #000; border: 3px solid #fff; border-radius: 20px; padding: 14px 28px; font-weight: 700;
     line-height: 1.35; text-align: var(--sub-align); overflow-wrap: anywhere; }
-  #subtitles .box[hidden] { display: none; }
   #sub-ja { margin: 0; font-size: var(--sub-size); color: var(--sub-color); }
   #sub-en { margin: 6px 0 0; font-size: var(--sub-en-size); color: var(--sub-en-color); }
   .translation { margin-top: 6px; padding-top: 6px; border-top: 1px solid currentColor; white-space: pre-wrap; }

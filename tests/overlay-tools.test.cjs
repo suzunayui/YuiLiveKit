@@ -48,7 +48,8 @@ async function openPart(browser, part, errors, viewport = { width: 800, height: 
   return page;
 }
 
-const visibleParts = page => page.$$eval('.widget', nodes => nodes.filter(n => !n.hidden).map(n => n.id));
+// What a viewer would see: parts that take up space on the page, not just ones without `hidden`.
+const visibleParts = page => page.$$eval('.widget', nodes => nodes.filter(n => getComputedStyle(n).display !== 'none').map(n => n.id));
 
 test('each part is its own page: niconico, participants and greetings', async () => {
   const demo = startDemo();
@@ -63,6 +64,8 @@ test('each part is its own page: niconico, participants and greetings', async ()
     const participants = await openPart(browser, 'participants', errors);
     const ohayo = await openPart(browser, 'ohayo', errors);
     assert.deepEqual(await visibleParts(nico), ['niconico'], 'a page shows only its own part');
+    assert.deepEqual(await visibleParts(comments), ['comments']);
+    assert.deepEqual(await visibleParts(participants), ['participants']);
     assert.deepEqual(await visibleParts(ohayo), ['ohayo']);
     await ohayo.waitForFunction(() => document.getElementById('ohayo-label').textContent === 'おはよう');
 
@@ -84,6 +87,14 @@ test('each part is its own page: niconico, participants and greetings', async ()
     await demo.send({ op: 'message', id: 'o2', author: 'A', author_id: 'UC1', text: 'おはよ〜' });
     await demo.send({ op: 'message', id: 'o3', author: 'B', author_id: 'UC4', text: 'おはなしして' });
     await ohayo.waitForFunction(() => document.getElementById('ohayo-count').textContent === '1');
+    for (const [name, page] of [['niconico', nico], ['comments', comments], ['participants', participants]]) {
+      assert.equal(await page.$eval('#ohayo', n => n.getBoundingClientRect().width), 0, `the greeting count stays off the ${name} page`);
+    }
+    await demo.send({ op: 'subtitle', ja: 'こんにちは', en: 'Hello' });
+    await ohayo.waitForFunction(() => document.getElementById('sub-ja').textContent === 'こんにちは');
+    for (const [name, page] of [['niconico', nico], ['comments', comments], ['participants', participants], ['ohayo', ohayo]]) {
+      assert.equal(await page.$eval('#sub-box', n => n.getBoundingClientRect().width), 0, `subtitles stay off the ${name} page`);
+    }
 
     await demo.send({ op: 'save_appearance', appearance: appearance({ comments: { font_size: 40 }, ohayo: { label: 'Good morning' } }) });
     await ohayo.waitForFunction(() => document.getElementById('ohayo-label').textContent === 'Good morning');

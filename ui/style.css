@@ -5,6 +5,8 @@
     --error: #f2b8b5; --first: #f48fb1; --last: #93c5fd; --unread: #3a3420; }
 }
 * { box-sizing: border-box; }
+/* `hidden` always hides, whatever `display` a rule below gives the element. */
+[hidden] { display: none !important; }
 /* Tabs in a fixed column on the left, so every tab stays in the same place and only the content scrolls. */
 body { margin: 0; height: 100vh; display: grid; grid-template-columns: 168px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr);
   font-family: "Yu Gothic UI", "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
