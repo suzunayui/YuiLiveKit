@@ -7,11 +7,16 @@ use std::{
 };
 
 use serde::Serialize;
-use tauri::{Emitter, Manager};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Emitter, Manager,
+};
 use yui_live_kit::{
-    core::{Core, Media, Notice, Status, ToolSettings},
+    core::{Connection, Core, Media, Notice, Status, ToolSettings},
     db::{Db, ImportSummary, Shown},
     appearance::{self, Appearance},
+    background::{self, Action, ObsLink},
     obs_plugin::{self, PluginStatus},
     runtime::{Feature, Paths, Runtime, RuntimeState},
     subtitles::{Launch, SubtitleSettings, SubtitleState, Subtitles},
@@ -71,6 +76,34 @@ fn write_obs_source_file(dir: &Path, port: u16) -> std::io::Result<()> {
     std::fs::write(dir.join("obs-source.json"), serde_json::to_vec_pretty(&file)?)
 }
 
+/// OBS wants the app kept running: closing the window hides it, and OBS closing ends it.
+struct KeptForObs(std::sync::atomic::AtomicBool);
+
+/// Tells the OBS plugin where the app is and whether to start it with OBS. Kept apart from
+/// obs-source.json, whose every change makes the plugin reload the overlay sources.
+fn write_obs_plugin_file(dir: &Path, link: ObsLink) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let app = std::env::current_exe()?;
+    let file = serde_json::json!({"app": app.display().to_string(), "start_with_obs": link.start_with_obs});
+    std::fs::write(dir.join("obs-plugin.json"), serde_json::to_vec_pretty(&file)?)
+}
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+#[tauri::command]
+fn set_obs_link(app: tauri::AppHandle, core: CoreState<'_>, link: ObsLink) -> Result<ObsLink, String> {
+    let link = core.set_obs_link(link)?;
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    write_obs_plugin_file(&dir, link).map_err(|e| format!("OBS プラグイン向けの設定を書けませんでした: {e}"))?;
+    Ok(link)
+}
+
 /// comments.db files of the Electron version, newest data first.
 fn legacy_candidates() -> Vec<String> {
     let Ok(app_data) = std::env::var("APPDATA") else { return Vec::new() };
@@ -95,6 +128,8 @@ struct AppState {
     ohayo: Ohayo,
     support: Vec<Support>,
     tool_settings: ToolSettings,
+    connection: Connection,
+    obs_link: ObsLink,
     appearance: Appearance,
     legacy_imported: bool,
     legacy_candidates: Vec<String>,
@@ -111,6 +146,8 @@ fn get_state(core: CoreState<'_>, error: tauri::State<'_, ServerError>) -> AppSt
         ohayo: core.ohayo(),
         support: core.support(),
         tool_settings: core.tool_settings(),
+        connection: core.connection(),
+        obs_link: core.obs_link(),
         appearance: core.appearance(),
         legacy_imported: core.db().legacy_imported().unwrap_or(false),
         legacy_candidates: legacy_candidates(),
@@ -466,15 +503,32 @@ fn attach_media(app: &tauri::AppHandle, core: &Arc<Core>, data_dir: &Path) {
 fn main() {
     let port = port();
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // The app is running and was launched again: by the user, or by OBS starting or closing.
+            use std::sync::atomic::Ordering;
+            let kept = app.state::<KeptForObs>();
+            let visible = app.get_webview_window("main").and_then(|w| w.is_visible().ok()).unwrap_or(false);
+            let (action, keep) = background::on_second_launch(background::launch_kind(&args), kept.0.load(Ordering::SeqCst), visible);
+            kept.0.store(keep, Ordering::SeqCst);
+            match action {
+                Action::ShowWindow => show_main_window(app),
+                Action::Exit => app.exit(0),
+                Action::Nothing => {}
             }
         }))
         .plugin(tauri_plugin_dialog::init())
         .manage(ServerError(Mutex::new(None)))
+        .manage(KeptForObs(std::sync::atomic::AtomicBool::new(false)))
+        .on_window_event(|window, event| {
+            // While OBS wants the app kept running, closing the window only puts it away.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let kept = window.state::<KeptForObs>().0.load(std::sync::atomic::Ordering::SeqCst);
+                if window.label() == "main" && background::hide_on_close(kept) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_state,
             start_chat,
@@ -486,6 +540,7 @@ fn main() {
             adjust_ohayo,
             reset_ohayo,
             set_tool_settings,
+            set_obs_link,
             set_support_read,
             save_appearance,
             obs_plugin_status,
@@ -514,12 +569,61 @@ fn main() {
             choose_emoji_sound,
         ])
         .setup(move |app| {
+            let args: Vec<String> = std::env::args().collect();
+            let launch = background::launch_kind(&args);
+            if launch == background::Launch::QuitBackground {
+                // OBS closed and the app was not running: there is nothing to close.
+                app.handle().exit(0);
+                return Ok(());
+            }
+            app.state::<KeptForObs>().0.store(launch == background::Launch::Background, std::sync::atomic::Ordering::SeqCst);
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title(&format!("YuiLiveKit {}", app.package_info().version));
             }
+            // The window starts hidden; OBS starting the app leaves it that way.
+            if launch == background::Launch::Normal {
+                show_main_window(app.handle());
+            }
+
+            // The tray icon is the way in while the window is put away.
+            let open = MenuItem::with_id(app, "open", "YuiLiveKit を開く", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
+            let mut tray = TrayIconBuilder::with_id("main")
+                .tooltip("YuiLiveKit")
+                .menu(&Menu::with_items(app, &[&open, &quit])?)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "open" => show_main_window(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        show_main_window(tray.app_handle());
+                    }
+                });
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            tray.build(app)?;
+
             let data_dir = app.path().app_data_dir()?;
             let core = Core::new(Db::open(&data_dir.join("livekit.db"))?);
             app.manage(core.clone());
+            if let Err(error) = write_obs_plugin_file(&data_dir, core.obs_link()) {
+                eprintln!("could not write obs-plugin.json: {error}");
+            }
+            // Started by OBS, with the user's say-so: collect from where chat was last collected.
+            let connection = core.connection();
+            let somewhere = !connection.youtube.is_empty() || !connection.twitch.is_empty();
+            if background::should_auto_start(launch, core.obs_link(), somewhere) {
+                let core = core.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = core.start(&connection.youtube, &connection.twitch) {
+                        eprintln!("could not start collecting for OBS: {error}");
+                    }
+                });
+            }
             tauri::async_runtime::spawn(core.clone().run_speech());
             attach_media(app.handle(), &core, &data_dir);
             let voicevox_dir =

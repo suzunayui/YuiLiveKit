@@ -5,6 +5,13 @@
  * and not in a group, so each can go in front of or behind any other source (comments
  * behind a 3D model, flying comments in front of it) by dragging it in OBS's list.
  *
+ * Nothing is added by itself: not every stream uses every part, so the Tools menu has one
+ * item per part, and each adds only that part to the current scene.
+ *
+ * When the user has asked for it in the app, the plugin also starts the app, without its
+ * window, once OBS has loaded, and tells it to go away when OBS closes. Everything the app
+ * does stays in the app's own process, so a fault there cannot take OBS down.
+ *
  * It also reloads those sources when the app starts. A browser source that loaded while
  * the app was not running shows an error page, and that page cannot reconnect by itself.
  */
@@ -12,15 +19,17 @@
 #include <obs-frontend-api.h>
 #include <graphics/vec2.h>
 #include <util/platform.h>
+#include <util/dstr.h>
 #include <sys/stat.h>
 #include <string.h>
+#include <windows.h>
 
 OBS_DECLARE_MODULE()
 
 /* Written by the app in its data folder: %APPDATA%\<Tauri identifier>. */
 #define SOURCE_FILE "com.suzunayui.yuilivekit/obs-source.json"
-/* Which scene collections already got the parts once. */
-#define ADDED_FILE "added-parts.json"
+/* Also written by the app: where it is, and whether OBS should start it. */
+#define PLUGIN_FILE "com.suzunayui.yuilivekit/obs-plugin.json"
 #define LOG_PREFIX "[yui-live-kit] "
 
 struct part {
@@ -39,8 +48,6 @@ static const struct part default_parts[] = {
 };
 #define DEFAULT_COUNT (sizeof(default_parts) / sizeof(default_parts[0]))
 #define MAX_PARTS 16
-
-static bool loaded;
 
 /* The app rewrites its file each time its server starts; a new time means it just started. */
 static time_t file_time;
@@ -103,85 +110,55 @@ static obs_source_t *get_or_create(const struct part *part)
 	return source;
 }
 
-/* Puts the parts in the current scene, creating what does not exist yet. */
-static bool add_to_current_scene(void)
+/* Adds one part to the current scene, at its usual place and on top of what is there. A part
+ * the scene already has is left alone. */
+static void add_part(const char *name)
 {
 	obs_source_t *scene_source = obs_frontend_get_current_scene();
 	obs_scene_t *scene = scene_source ? obs_scene_from_source(scene_source) : NULL;
 	if (!scene) {
 		obs_source_release(scene_source);
 		blog(LOG_WARNING, LOG_PREFIX "no current scene");
-		return false;
+		return;
 	}
 
 	struct part parts[MAX_PARTS];
 	obs_data_t *file = NULL;
 	double canvas_width;
 	size_t count = read_parts(parts, &file, &canvas_width);
-
-	/* Positions are for the app's canvas; scale them to the one OBS uses. */
-	float scale = 1.0f;
-	struct obs_video_info ovi;
-	if (obs_get_video_info(&ovi) && canvas_width > 0)
-		scale = (float)(ovi.base_width / canvas_width);
-
-	bool ok = true;
-	int added_parts = 0;
-	/* Back to front: each new item goes on top of the ones before it. */
+	const struct part *part = NULL;
 	for (size_t i = 0; i < count; i++) {
-		if (obs_scene_find_source_recursive(scene, parts[i].name))
-			continue;
-		obs_source_t *source = get_or_create(&parts[i]);
-		if (!source) {
-			blog(LOG_WARNING, LOG_PREFIX "browser_source is not available in this OBS");
-			ok = false;
-			break;
-		}
-		obs_sceneitem_t *item = obs_scene_add(scene, source);
+		if (strcmp(parts[i].name, name) == 0)
+			part = &parts[i];
+	}
+
+	if (!part) {
+		blog(LOG_WARNING, LOG_PREFIX "the app does not list '%s'", name);
+	} else if (obs_scene_find_source_recursive(scene, part->name)) {
+		blog(LOG_INFO, LOG_PREFIX "'%s' is already in scene '%s'", part->name, obs_source_get_name(scene_source));
+	} else {
+		obs_source_t *source = get_or_create(part);
+		obs_sceneitem_t *item = source ? obs_scene_add(scene, source) : NULL;
 		if (item) {
+			/* Positions are for the app's canvas; scale them to the one OBS uses. */
+			float scale = 1.0f;
+			struct obs_video_info ovi;
+			if (obs_get_video_info(&ovi) && canvas_width > 0)
+				scale = (float)(ovi.base_width / canvas_width);
 			struct vec2 pos, size;
-			vec2_set(&pos, (float)parts[i].x * scale, (float)parts[i].y * scale);
+			vec2_set(&pos, (float)part->x * scale, (float)part->y * scale);
 			vec2_set(&size, scale, scale);
 			obs_sceneitem_set_pos(item, &pos);
 			obs_sceneitem_set_scale(item, &size);
-			added_parts++;
+			blog(LOG_INFO, LOG_PREFIX "added '%s' to scene '%s'", part->name, obs_source_get_name(scene_source));
+		} else {
+			blog(LOG_WARNING, LOG_PREFIX "browser_source is not available in this OBS");
 		}
 		obs_source_release(source);
 	}
 
-	blog(LOG_INFO, LOG_PREFIX "added %d part(s) to scene '%s'", added_parts, obs_source_get_name(scene_source));
-
 	obs_data_release(file);
 	obs_source_release(scene_source);
-	return ok;
-}
-
-/* Adds the parts once per scene collection, so parts the user removed stay removed. */
-static void add_once_for_collection(void)
-{
-	char *collection = obs_frontend_get_current_scene_collection();
-	char *path = obs_module_config_path(ADDED_FILE);
-	obs_data_t *added = path ? obs_data_create_from_json_file_safe(path, "bak") : NULL;
-	if (!added)
-		added = obs_data_create();
-
-	if (collection && path && !obs_data_get_bool(added, collection)) {
-		if (add_to_current_scene()) {
-			obs_data_set_bool(added, collection, true);
-			char *dir = obs_module_config_path("");
-			if (dir)
-				os_mkdirs(dir);
-			bfree(dir);
-			if (!obs_data_save_json_safe(added, path, "tmp", "bak"))
-				blog(LOG_WARNING, LOG_PREFIX "could not save %s", path);
-		}
-	} else if (collection) {
-		blog(LOG_INFO, LOG_PREFIX "already added once to collection '%s'", collection);
-	}
-
-	obs_data_release(added);
-	bfree(path);
-	bfree(collection);
 }
 
 static time_t app_file_time(void)
@@ -262,29 +239,77 @@ static void on_tick(void *data, float seconds)
 	}
 }
 
+/* Whether this OBS started the app, so that only then it is told to go away. */
+static bool started_app;
+
+/* Runs the app with one argument: "--background" to start it without its window (or, if it
+ * is running, to keep it running), "--quit-background" to end it unless its window is open.
+ * `only_if_wanted` checks the user's setting first. Returns whether it was run. */
+static bool run_app(const char *argument, bool only_if_wanted)
+{
+	char *path = os_get_config_path_ptr(PLUGIN_FILE);
+	obs_data_t *file = path ? obs_data_create_from_json_file(path) : NULL;
+	bfree(path);
+	if (!file)
+		return false;
+
+	bool ran = false;
+	const char *app = obs_data_get_string(file, "app");
+	if (only_if_wanted && !obs_data_get_bool(file, "start_with_obs")) {
+		/* Off unless the user turned it on in the app. */
+	} else if (!*app || !os_file_exists(app)) {
+		blog(LOG_WARNING, LOG_PREFIX "the app is not at '%s'", app);
+	} else {
+		struct dstr command = {0};
+		dstr_printf(&command, "\"%s\" %s", app, argument);
+		wchar_t *wide = NULL;
+		os_utf8_to_wcs_ptr(command.array, command.len, &wide);
+		STARTUPINFOW startup = {0};
+		startup.cb = sizeof(startup);
+		PROCESS_INFORMATION process = {0};
+		if (wide && CreateProcessW(NULL, wide, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &process)) {
+			CloseHandle(process.hThread);
+			CloseHandle(process.hProcess);
+			ran = true;
+			blog(LOG_INFO, LOG_PREFIX "ran the app with %s", argument);
+		} else {
+			blog(LOG_WARNING, LOG_PREFIX "could not run the app (error %lu)", GetLastError());
+		}
+		bfree(wide);
+		dstr_free(&command);
+	}
+	obs_data_release(file);
+	return ran;
+}
+
 static void on_event(enum obs_frontend_event event, void *data)
 {
 	UNUSED_PARAMETER(data);
 	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING) {
-		loaded = true;
-		add_once_for_collection();
-	} else if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED && loaded) {
-		add_once_for_collection();
+		started_app = run_app("--background", true);
+	} else if (event == OBS_FRONTEND_EVENT_EXIT && started_app) {
+		started_app = false;
+		run_app("--quit-background", false);
 	}
 }
 
+/* The Tools menu has one item per part; `data` is the part's name. */
 static void on_menu(void *data)
 {
-	UNUSED_PARAMETER(data);
-	add_to_current_scene();
+	add_part(data);
 }
+
+static char menu_labels[DEFAULT_COUNT][160];
 
 bool obs_module_load(void)
 {
 	file_time = app_file_time();
 	obs_add_tick_callback(on_tick, NULL);
 	obs_frontend_add_event_callback(on_event, NULL);
-	obs_frontend_add_tools_menu_item("YuiLiveKit を今のシーンに追加", on_menu, NULL);
+	for (size_t i = 0; i < DEFAULT_COUNT; i++) {
+		snprintf(menu_labels[i], sizeof(menu_labels[i]), "%s を今のシーンに追加", default_parts[i].name);
+		obs_frontend_add_tools_menu_item(menu_labels[i], on_menu, (void *)default_parts[i].name);
+	}
 	return true;
 }
 

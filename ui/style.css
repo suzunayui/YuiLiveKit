@@ -110,6 +110,8 @@ h3.sub { font-size: 14px; margin: 12px 0 4px; }
 .look-part { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0 12px; margin: 0 0 12px;
   border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; }
 .look-part legend { font-weight: 700; padding: 0 4px; }
+.card ul { margin: 0 0 8px; padding-left: 1.4em; }
+.card li { margin-bottom: 4px; }
 #part-urls { border-collapse: collapse; width: 100%; margin-bottom: 8px; }
 #part-urls th, #part-urls td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
 #part-urls code { user-select: all; }

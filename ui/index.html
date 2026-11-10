@@ -245,21 +245,30 @@
 
     <section data-panel="obs" hidden>
       <div class="card">
+        <h2>OBS に部品を追加する</h2>
+        <p>使う部品だけを追加します。「⠿ ドラッグ」を OBS の「ソース」欄かプレビューにドラッグし、確認で「はい」を選ぶと、名前と大きさが設定されたブラウザソースとして追加されます。位置、大きさ、重なり順は OBS で決めます。</p>
+        <table id="part-urls"><thead><tr><th>部品</th><th>URL</th><th>幅×高さ</th><th></th></tr></thead><tbody></tbody></table>
+        <span id="copy-result" class="hint"></span>
+        <p class="hint">ドラッグできないときは、URL をコピーしてブラウザソースを追加し、幅と高さを表のとおりにします。プラグインを入れてあれば、OBS の「ツール」メニューからも部品ごとに追加できます。</p>
+      </div>
+      <div class="card">
         <h2>OBS プラグイン</h2>
-        <p>プラグインを入れると、OBS の起動時に今のシーンへ、部品ごとのソース（「YuiLiveKit - コメント」など5つ）を追加します。グループにはまとめないので、それぞれを OBS のソース一覧でドラッグして、ほかのソースの前や後ろに置けます。追加はシーンコレクションごとに一度だけで、消したソースは戻しません。OBS の「ツール」メニューからは、今のシーンに無い部品を追加できます。</p>
-        <p>アプリより先に OBS を起動しても、アプリが起動したときに YuiLiveKit のソースを自動で読み込み直すので、表示の更新は要りません。</p>
+        <p>入れておくと、次のことをします。OBS へ勝手にソースを追加することはありません。</p>
+        <ul>
+          <li>アプリより先に OBS を起動しても、アプリが起動したときに YuiLiveKit のソースを自動で読み込み直します（入れていない場合は、ソースを右クリックして「更新」を押します）。</li>
+          <li>OBS の「ツール」メニューに、部品ごとの「YuiLiveKit - コメント を今のシーンに追加」などの項目を足します。</li>
+        </ul>
         <p>状態: <strong id="plugin-state">確認中…</strong></p>
         <p class="hint" id="plugin-path"></p>
         <button id="plugin-install" class="primary">OBS プラグインを導入</button>
         <p id="plugin-result"></p>
+        <h3 class="sub">OBS と一緒に動かす</h3>
+        <p class="hint">設定を変えないときは、YuiLiveKit を自分で開かなくても使えるようにします。プラグインが入っているときに働きます。</p>
+        <label class="inline"><input type="checkbox" id="obs-start-with"> OBS を起動したら YuiLiveKit も画面を出さずに起動し、OBS を閉じたら終了する</label>
+        <label class="inline"><input type="checkbox" id="obs-auto-start"> そのとき、前回の接続先でコメントの取得も始める</label>
+        <p class="hint">画面を出さずに動いている間は、タスクトレイのアイコンから開けます。設定を開いたまま OBS を閉じた場合は、終了せずに残ります。</p>
+        <p id="obs-link-result"></p>
       </div>
-      <details class="card fold" id="fold-obs-manual">
-        <summary><h2>プラグインを使わずに追加する</h2></summary>
-        <p>使う部品の「⠿ ドラッグ」を OBS の「ソース」欄かプレビューにドラッグし、確認で「はい」を選ぶと、名前と大きさが設定されたブラウザソースとして追加されます。上から順に追加すると、下の部品ほど手前に重なります。</p>
-        <p class="hint">ドラッグできないときは、URL をコピーしてブラウザソースを追加し、幅と高さを表のとおりにします。プラグインを入れていない場合、アプリより先に OBS を起動したときは、ソースを右クリックして「更新」を押してください。</p>
-        <table id="part-urls"><thead><tr><th>部品</th><th>URL</th><th>幅×高さ</th><th></th></tr></thead><tbody></tbody></table>
-        <span id="copy-result" class="hint"></span>
-      </details>
       <div class="card">
         <h2>見た目</h2>
         <p class="hint">部品ごとに OBS のソースが分かれています。位置、大きさ、重なり順（3D モデルの前か後ろかなど）は OBS で決めます。</p>

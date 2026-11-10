@@ -27,6 +27,17 @@ const APPEARANCE_KEY: &str = "appearance";
 const PARTICIPANT_KEYWORD_KEY: &str = "participant_keyword";
 const PARTICIPANT_KEYWORDS_KEY: &str = "participant_keywords";
 const WITHDRAW_KEYWORDS_KEY: &str = "withdraw_keywords";
+const CONNECTION_KEY: &str = "connection";
+const OBS_LINK_KEY: &str = "obs_link";
+
+/// Where chat was last collected from, as typed. Kept by the app, not only by the window, so
+/// collecting can start again without the window open.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Connection {
+    pub youtube: String,
+    pub twitch: String,
+}
 const OHAYO_KEYWORDS_KEY: &str = "ohayo_keywords";
 const SPEECH_KEY: &str = "speech";
 const AI_KEY: &str = "ai";
@@ -311,6 +322,35 @@ impl Core {
             }
         }
         Some(id)
+    }
+
+    /// Takes a stream that has ended out of what is shown, when the next one begins. The lists
+    /// start over with what is left (the other platform's chat, if both are collected).
+    pub fn leave_stream(&self, stream_id: i64) {
+        self.session.lock().unwrap().streams.retain(|id| *id != stream_id);
+        self.notify(Notice::Reset);
+        let messages = self.snapshot(RESTORE_SIZE);
+        if !messages.is_empty() {
+            self.notify(Notice::Restored { messages, support: self.support() });
+        }
+        self.notify_participants();
+        self.refresh_ohayo();
+        self.notify(Notice::Ohayo(self.ohayo()));
+    }
+
+    pub fn connection(&self) -> Connection {
+        load(&self.db(), CONNECTION_KEY)
+    }
+
+    pub fn obs_link(&self) -> crate::background::ObsLink {
+        load(&self.db(), OBS_LINK_KEY)
+    }
+
+    pub fn set_obs_link(&self, link: crate::background::ObsLink) -> Result<crate::background::ObsLink, String> {
+        // Collecting by itself only means something when OBS starts the app.
+        let link = crate::background::ObsLink { auto_start: link.auto_start && link.start_with_obs, ..link };
+        self.save(OBS_LINK_KEY, &link)?;
+        Ok(link)
     }
 
     /// Stores a batch, then announces new messages, removals and what they changed.
@@ -900,6 +940,9 @@ impl Core {
         if youtube_target.is_none() && twitch_channel.is_none() {
             return Err("YouTubeかTwitchのどちらかを入力してください".into());
         }
+        // Remembered once it is known to be valid, for the next start.
+        let connection = Connection { youtube: youtube_input.trim().into(), twitch: twitch_input.trim().into() };
+        let _ = self.save(CONNECTION_KEY, &connection);
         let token = self.reset_session();
         self.start_media_with_chat();
 
@@ -910,7 +953,16 @@ impl Core {
             tokio::spawn(async move {
                 let mut stream_id = None;
                 let result = youtube::run(target, token.clone(), |event| match event {
-                    youtube::Event::Stream { video_id } => stream_id = core.add_stream(Platform::Youtube, &video_id),
+                    youtube::Event::Stream { video_id } => {
+                        // A channel left on from one stream to the next shows only the new one.
+                        let next = core.db().ensure_stream(Platform::Youtube, &video_id, now_ms()).ok();
+                        if let (Some(old), Some(new)) = (stream_id, next) {
+                            if old != new {
+                                core.leave_stream(old);
+                            }
+                        }
+                        stream_id = core.add_stream(Platform::Youtube, &video_id);
+                    }
                     youtube::Event::Batch(batch) => {
                         if let Some(id) = stream_id {
                             core.ingest(id, batch);
@@ -1069,6 +1121,48 @@ mod tests {
         let mut notices = core.subscribe();
         core.add_stream(Platform::Youtube, "other").unwrap();
         assert!(std::iter::from_fn(|| notices.try_recv().ok()).all(|n| !matches!(n, Notice::Restored { .. })), "a new stream starts empty");
+    }
+
+    #[test]
+    fn the_next_stream_of_a_channel_replaces_the_one_that_ended() {
+        let core = Core::new(Db::open_in_memory().unwrap());
+        core.reset_session();
+        let first = core.add_stream(Platform::Youtube, "first").unwrap();
+        let twitch = core.add_stream(Platform::Twitch, "yui:1").unwrap();
+        core.ingest(first, batch(vec![message("1", "UC1", "参加希望"), message("2", "UC2", "おはよう")]));
+        core.ingest(twitch, batch(vec![message("t1", "u1", "from twitch")]));
+        assert_eq!((core.snapshot(10).len(), core.participants().len(), core.ohayo().count), (3, 1, 1));
+
+        let mut notices = core.subscribe();
+        core.leave_stream(first);
+        let second = core.add_stream(Platform::Youtube, "second").unwrap();
+        assert_ne!(first, second);
+        let seen: Vec<Notice> = std::iter::from_fn(|| notices.try_recv().ok()).collect();
+        assert!(matches!(seen[0], Notice::Reset), "the lists start over");
+        assert!(seen.iter().any(|n| matches!(n, Notice::Restored { messages, .. } if messages.len() == 1 && messages[0].message.id == "t1")), "with the other platform's chat still there");
+        assert_eq!(core.snapshot(10).iter().map(|s| s.message.id.as_str()).collect::<Vec<_>>(), vec!["t1"]);
+        assert_eq!((core.participants().len(), core.ohayo().count), (0, 0), "the queue and the count belong to the stream that ended");
+    }
+
+    #[test]
+    fn what_obs_may_do_is_off_until_turned_on() {
+        use crate::background::ObsLink;
+        let core = Core::new(Db::open_in_memory().unwrap());
+        assert_eq!(core.obs_link(), ObsLink::default());
+        let saved = core.set_obs_link(ObsLink { start_with_obs: false, auto_start: true }).unwrap();
+        assert_eq!(saved, ObsLink::default(), "collecting by itself needs starting with OBS");
+        let saved = core.set_obs_link(ObsLink { start_with_obs: true, auto_start: true }).unwrap();
+        assert_eq!((saved, core.obs_link()), (ObsLink { start_with_obs: true, auto_start: true }, saved));
+    }
+
+    #[test]
+    fn the_connection_is_remembered_once_it_is_valid() {
+        let core = Core::new(Db::open_in_memory().unwrap());
+        assert_eq!(core.connection(), Connection::default());
+        assert!(core.start("", "").is_err());
+        assert_eq!(core.connection(), Connection::default(), "nothing is kept from a start that was refused");
+        let _ = core.save(CONNECTION_KEY, &Connection { youtube: " @yui ".trim().into(), twitch: "yui".into() });
+        assert_eq!(core.connection(), Connection { youtube: "@yui".into(), twitch: "yui".into() });
     }
 
     #[test]

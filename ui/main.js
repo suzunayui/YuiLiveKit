@@ -3,7 +3,7 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const MAX_ITEMS = 300;
-const STATUS_LABELS = { starting: '接続中…', running: '取得中', reconnecting: '再接続中…', stopped: '停止中' };
+const STATUS_LABELS = { starting: '接続中…', running: '取得中', reconnecting: '再接続中…', waiting: '配信の開始を待っています', stopped: '停止中' };
 const PLATFORM_LABELS = { youtube: 'YouTube', twitch: 'Twitch' };
 const SUPPORT_KINDS = ['paid', 'sticker', 'membership', 'gift_purchase', 'gift_redeem', 'bits'];
 const $ = id => document.getElementById(id);
@@ -318,15 +318,12 @@ function renderStatuses() {
   $('stop').disabled = !running;
 }
 
-$('youtube').value = recall('youtube');
-$('twitch').value = recall('twitch');
+// Filled in once the app has answered (see the end of this file).
 
 // Enter in either box starts too.
 $('connect').addEventListener('submit', async event => {
   event.preventDefault();
   showError('start-error', '');
-  remember('youtube', $('youtube').value.trim());
-  remember('twitch', $('twitch').value.trim());
   try {
     await invoke('start_chat', { youtube: $('youtube').value, twitch: $('twitch').value });
   } catch (error) {
@@ -554,7 +551,22 @@ $('plugin-install').addEventListener('click', () => attempt('plugin-result', asy
   $('plugin-result').textContent = '導入中…';
   await invoke('install_obs_plugin');
   await refreshPlugin();
-}, '導入しました。OBS を起動すると、今のシーンに YuiLiveKit のソースが5つ追加されます。'));
+}, '導入しました。次に OBS を起動したときから働きます。'));
+function renderObsLink(link) {
+  $('obs-start-with').checked = link.start_with_obs;
+  $('obs-auto-start').checked = link.auto_start;
+  // Collecting by itself only means something when OBS starts the app.
+  $('obs-auto-start').disabled = !link.start_with_obs;
+}
+for (const id of ['obs-start-with', 'obs-auto-start']) {
+  $(id).addEventListener('change', async () => {
+    const link = { start_with_obs: $('obs-start-with').checked, auto_start: $('obs-auto-start').checked };
+    const saved = await attempt('obs-link-result', () => invoke('set_obs_link', { link }), '保存しました。');
+    // On failure, show what is really saved.
+    renderObsLink(saved || state.obs_link);
+    if (saved) state.obs_link = saved;
+  });
+}
 function renderPartUrls() {
   const body = $('part-urls').tBodies[0];
   body.replaceChildren();
@@ -975,6 +987,10 @@ await listen('chat', ({ payload }) => {
 await listen('server-error', ({ payload }) => showError('server-error', payload));
 
 const state = await invoke('get_state');
+// The app remembers where chat was last collected from. Before it did, this window kept it;
+// that is used once, until the first start saves it in the app.
+$('youtube').value = state.connection.youtube || (state.connection.twitch ? '' : recall('youtube'));
+$('twitch').value = state.connection.twitch || (state.connection.youtube ? '' : recall('twitch'));
 parts = state.parts;
 renderPartUrls();
 showError('server-error', state.server_error);
@@ -986,6 +1002,7 @@ renderSupport();
 renderParticipants(state.participants);
 renderOhayo(state.ohayo);
 renderToolSettings(state.tool_settings);
+renderObsLink(state.obs_link);
 appearance = state.appearance;
 renderLook();
 if (!state.legacy_imported && state.legacy_candidates.length) {

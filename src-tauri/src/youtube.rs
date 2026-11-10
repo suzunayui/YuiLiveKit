@@ -12,6 +12,8 @@ const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 /// Responses without a continuation in a row before the stream counts as ended.
 pub const ENDED_POLLS_BEFORE_STOP: u32 = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(5);
+/// How often a channel is checked for a stream while none is on.
+const WAIT_FOR_STREAM: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -454,20 +456,85 @@ async fn post_live_chat(client: &reqwest::Client, options: &PageOptions, continu
     response.json().await.map_err(|e| e.to_string())
 }
 
-/// Polls the chat until cancelled or the stream ends. Errors before the first poll stop it;
-/// later errors are retried.
-pub async fn run(target: Target, cancel: CancellationToken, mut emit: impl FnMut(Event)) -> Result<(), String> {
-    let client = client();
-    let video_id = resolve_video_id(&client, &target).await?.ok_or("配信中の動画が見つかりません")?;
-    let html = get_text(&client, &format!("https://www.youtube.com/watch?v={video_id}")).await?;
-    let options = extract_options(&html)?;
-    let first = post_live_chat(&client, &options, &options.continuation).await?;
+/// How one attempt at a stream ended.
+#[derive(Debug, PartialEq)]
+pub enum Outcome {
+    Cancelled,
+    /// The channel has no stream right now (or only the one that just ended).
+    NotLive,
+    /// The stream with this video id ended.
+    Ended(String),
+    /// The address does not exist (HTTP 404).
+    NotFound,
+    Failed(String),
+}
+
+/// What to do after an attempt: stop with a result, or wait and look again.
+#[derive(Debug, PartialEq)]
+pub enum Next {
+    Stop(Result<(), String>),
+    Wait,
+}
+
+/// A channel is followed from stream to stream: before a stream starts and after it ends, the
+/// app waits and looks again, so "start" can be pressed ahead of time and left on. A single
+/// video is not: when it cannot be read or has ended, there is nothing to wait for. A channel
+/// that does not exist is reported at once rather than waited for.
+pub fn after(follows_channel: bool, first_attempt: bool, outcome: &Outcome) -> Next {
+    match outcome {
+        Outcome::Cancelled => Next::Stop(Ok(())),
+        Outcome::NotFound if follows_channel && first_attempt => {
+            Next::Stop(Err("チャンネルが見つかりません。入力を確かめてください".into()))
+        }
+        _ if follows_channel => Next::Wait,
+        Outcome::NotLive => Next::Stop(Err("配信中の動画が見つかりません".into())),
+        Outcome::Ended(_) => Next::Stop(Err("配信が終了したため、チャットの取得を停止しました".into())),
+        Outcome::NotFound => Next::Stop(Err("動画が見つかりません。入力を確かめてください".into())),
+        Outcome::Failed(error) => Next::Stop(Err(error.clone())),
+    }
+}
+
+fn failed(error: String) -> Outcome {
+    if error.contains("(404") { Outcome::NotFound } else { Outcome::Failed(error) }
+}
+
+/// Reads one stream's chat until cancelled or the stream ends. `ended` is the stream that
+/// ended last: a channel's live page can go on pointing at it for a while.
+async fn run_once(
+    client: &reqwest::Client,
+    target: &Target,
+    cancel: &CancellationToken,
+    emit: &mut impl FnMut(Event),
+    ended_video: Option<&str>,
+) -> Outcome {
+    let video_id = match resolve_video_id(client, target).await {
+        Ok(Some(id)) if Some(id.as_str()) != ended_video => id,
+        Ok(_) => return Outcome::NotLive,
+        Err(error) => return failed(error),
+    };
+    let html = match get_text(client, &format!("https://www.youtube.com/watch?v={video_id}")).await {
+        Ok(html) => html,
+        Err(error) => return failed(error),
+    };
+    let options = match extract_options(&html) {
+        Ok(options) => options,
+        // The page has no chat: an upload or an archive, not a stream.
+        Err(error) if matches!(target, Target::LivePath(_)) => {
+            let _ = error;
+            return Outcome::NotLive;
+        }
+        Err(error) => return Outcome::Failed(error),
+    };
+    let first = match post_live_chat(client, &options, &options.continuation).await {
+        Ok(first) => first,
+        Err(error) => return Outcome::Failed(error),
+    };
     let mut continuation = all_chat_continuation(&first).unwrap_or_else(|| options.continuation.clone());
-    emit(Event::Stream { video_id });
+    emit(Event::Stream { video_id: video_id.clone() });
 
     let mut ended = EndTracker::default();
     while !cancel.is_cancelled() {
-        let delay = match post_live_chat(&client, &options, &continuation).await {
+        let delay = match post_live_chat(client, &options, &continuation).await {
             Ok(data) => {
                 let poll = parse_poll(&data);
                 emit(Event::Batch(poll.batch));
@@ -480,7 +547,7 @@ pub async fn run(target: Target, cancel: CancellationToken, mut emit: impl FnMut
                     }
                     None => {
                         if ended.record(false) {
-                            return Err("配信が終了したため、チャットの取得を停止しました".into());
+                            return Outcome::Ended(video_id);
                         }
                         emit(Event::Status("reconnecting"));
                         RETRY_DELAY
@@ -497,12 +564,58 @@ pub async fn run(target: Target, cancel: CancellationToken, mut emit: impl FnMut
             _ = tokio::time::sleep(delay) => {}
         }
     }
-    Ok(())
+    Outcome::Cancelled
+}
+
+/// Reads the chat until cancelled. A channel is followed from stream to stream (see `after`);
+/// a single video stops when it ends or cannot be read.
+pub async fn run(target: Target, cancel: CancellationToken, mut emit: impl FnMut(Event)) -> Result<(), String> {
+    let client = client();
+    let follows_channel = matches!(target, Target::LivePath(_));
+    let mut ended_video: Option<String> = None;
+    let mut first_attempt = true;
+    loop {
+        let outcome = run_once(&client, &target, &cancel, &mut emit, ended_video.as_deref()).await;
+        if let Next::Stop(result) = after(follows_channel, first_attempt, &outcome) {
+            return result;
+        }
+        if let Outcome::Ended(video) = outcome {
+            ended_video = Some(video);
+        }
+        first_attempt = false;
+        emit(Event::Status("waiting"));
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            _ = tokio::time::sleep(WAIT_FOR_STREAM) => {}
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_channel_is_waited_for_and_a_single_video_is_not() {
+        let ended = Outcome::Ended("v1".into());
+        let broken = Outcome::Failed("timeout".into());
+        // A channel: before a stream, after it ends and through errors, wait and look again.
+        for outcome in [&Outcome::NotLive, &ended, &broken] {
+            assert_eq!(after(true, true, outcome), Next::Wait, "{outcome:?}");
+            assert_eq!(after(true, false, outcome), Next::Wait, "{outcome:?}");
+        }
+        // A channel that does not exist is a typing mistake; later on, a 404 is a hiccup.
+        assert!(matches!(after(true, true, &Outcome::NotFound), Next::Stop(Err(e)) if e.contains("チャンネル")));
+        assert_eq!(after(true, false, &Outcome::NotFound), Next::Wait);
+        // A single video: nothing to wait for.
+        assert!(matches!(after(false, true, &Outcome::NotLive), Next::Stop(Err(e)) if e.contains("見つかりません")));
+        assert!(matches!(after(false, false, &ended), Next::Stop(Err(e)) if e.contains("終了")));
+        assert!(matches!(after(false, true, &broken), Next::Stop(Err(e)) if e == "timeout"));
+        // Stopping is not an error either way.
+        assert_eq!(after(true, false, &Outcome::Cancelled), Next::Stop(Ok(())));
+        assert_eq!(after(false, false, &Outcome::Cancelled), Next::Stop(Ok(())));
+        assert_eq!(failed("YouTubeの取得に失敗しました (404 Not Found)".into()), Outcome::NotFound);
+    }
 
     fn video(id: &str) -> Result<Target, String> {
         Ok(Target::Video(id.into()))

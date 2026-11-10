@@ -79,6 +79,7 @@ const fakeTauri = ({ state }) => {
             saved.comments.font_size = Math.min(Math.max(saved.comments.font_size, 10), 200);
             return saved;
           }
+          case 'set_obs_link': return { ...args.link, auto_start: args.link.auto_start && args.link.start_with_obs };
           case 'obs_plugin_status': return { state: 'missing', path: 'C:\\ProgramData\\obs-studio\\plugins\\yui-live-kit\\bin\\64bit\\yui-live-kit.dll', obs_running: false };
           case 'install_obs_plugin': return { state: 'installed', path: '', obs_running: false };
           case 'get_voice_state': return voice;
@@ -154,6 +155,8 @@ function baseState(extra = {}) {
       { ...message('youtube:12', { kind: 'membership', author: 'Member', text: 'joined' }), read: true },
     ],
     tool_settings: { participant_keywords: ['参加希望'], withdraw_keywords: ['辞退'], ohayo_keywords: ['おはよ', 'おっは'] },
+    connection: { youtube: '', twitch: '' },
+    obs_link: { start_with_obs: false, auto_start: false },
     appearance: defaultAppearance,
     legacy_imported: false, legacy_candidates: ['C:\\Users\\a\\AppData\\Roaming\\YuiLiveKit\\comments.db'],
     voice: {
@@ -281,7 +284,12 @@ test('support, participants, appearance and OBS tabs', async () => {
   const server = await serve();
   const browser = await chromium.launch({ channel: 'msedge' });
   try {
-    const { page, errors } = await open(browser, server, baseState());
+    const { page, errors } = await open(browser, server, baseState({ connection: { youtube: '@saved', twitch: 'yui' } }));
+    // The app remembers where chat was collected from, and says so when it is waiting for a stream.
+    assert.deepEqual([await page.inputValue('#youtube'), await page.inputValue('#twitch')], ['@saved', 'yui']);
+    await page.evaluate(() => window.fire('chat', { type: 'status', platform: 'youtube', status: 'waiting', detail: null }));
+    assert.equal(await page.textContent('#statuses'), 'YouTube: 配信の開始を待っています');
+    assert.equal(await page.isDisabled('#stop'), false, 'waiting can be stopped');
     assert.equal(await page.textContent('#support-unread'), '（1）');
     await page.click('[data-tab="support"]');
     await page.check('#support-unread-only');
@@ -347,7 +355,18 @@ test('support, participants, appearance and OBS tabs', async () => {
     assert.deepEqual(await page.$$eval('#part-urls tbody tr', rows => rows.map(r => r.children[1].textContent)),
       defaultParts.map(p => p.url), 'each part has its own URL');
     assert.equal(await page.textContent('#part-urls tbody tr:nth-child(3) td:nth-child(3)'), '720×636');
-    await unfold(page, 'fold-obs-manual');
+    assert.equal(await page.isVisible('#part-urls tbody tr:nth-child(3) a.drag'), true, 'adding parts is in plain sight');
+
+    // Running with OBS is off at first, and collecting by itself needs it.
+    assert.deepEqual([await page.isChecked('#obs-start-with'), await page.isChecked('#obs-auto-start'), await page.isDisabled('#obs-auto-start')], [false, false, true]);
+    await page.check('#obs-start-with');
+    await page.waitForFunction(() => !document.getElementById('obs-auto-start').disabled);
+    await page.check('#obs-auto-start');
+    await page.waitForFunction(() => window.calls.filter(c => c[0] === 'set_obs_link').length === 2);
+    assert.deepEqual((await page.evaluate(() => window.calls.filter(c => c[0] === 'set_obs_link').pop()))[1].link, { start_with_obs: true, auto_start: true });
+    await page.uncheck('#obs-start-with');
+    await page.waitForFunction(() => document.getElementById('obs-auto-start').disabled);
+    assert.equal(await page.isChecked('#obs-auto-start'), false, 'turning the first off turns the second off');
     const dragged = await page.evaluate(() => {
       const link = document.querySelector('#part-urls tbody tr:nth-child(3) a.drag');
       const data = new DataTransfer();
