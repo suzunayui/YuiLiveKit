@@ -89,7 +89,23 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS archives (
+  video_id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL,
+  messages INTEGER NOT NULL,
+  checked_ms INTEGER NOT NULL
+);
 "#;
+
+/// A past stream whose whole chat replay was read.
+const ARCHIVE_DONE: &str = "done";
+/// A past stream that had no chat replay when it was looked at.
+const ARCHIVE_NONE: &str = "none";
+/// A stream without a replay is looked at again after this long: one that just ended gets
+/// its replay a little later.
+const ARCHIVE_RECHECK_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Viewers known only by name: comments imported from the Electron version, or messages without an id.
 const NAME_PREFIX: &str = "name:";
@@ -152,8 +168,15 @@ fn viewer_for(conn: &Connection, message: &ChatMessage) -> Result<i64> {
         .optional()
         .map_err(err)?;
     if let Some(id) = found {
+        // The name and icon follow the viewer's newest message, so chat read later from a
+        // past stream does not bring an old name back.
         conn.execute(
-            "UPDATE viewers SET display_name = ?2, icon_url = COALESCE(?3, icon_url), first_seen_ms = MIN(first_seen_ms, ?4) WHERE id = ?1",
+            "UPDATE viewers SET
+               display_name = CASE WHEN newest.yes THEN ?2 ELSE display_name END,
+               icon_url = CASE WHEN newest.yes THEN COALESCE(?3, icon_url) ELSE icon_url END,
+               first_seen_ms = MIN(first_seen_ms, ?4)
+             FROM (SELECT NOT EXISTS (SELECT 1 FROM messages WHERE viewer_id = ?1 AND created_ms > ?4) AS yes) AS newest
+             WHERE id = ?1",
             params![id, message.author, message.icon, message.created_ms],
         )
         .map_err(err)?;
@@ -450,6 +473,52 @@ impl Db {
         set_setting(&self.conn, key, value)
     }
 
+    /// Stores chat read from a past stream's replay and returns how many messages were new.
+    /// The stream takes the time it went on air, so it sits in its place among the others.
+    pub fn import_archive(&mut self, video_id: &str, started_ms: Option<i64>, messages: &[ChatMessage]) -> Result<usize> {
+        let Some(started_ms) = started_ms.or_else(|| messages.iter().map(|m| m.created_ms).min()) else {
+            return Ok(0);
+        };
+        let tx = self.conn.transaction().map_err(err)?;
+        let stream_id = ensure_stream(&tx, Platform::Youtube, video_id, started_ms)?;
+        tx.execute("UPDATE streams SET first_seen_ms = MIN(first_seen_ms, ?2) WHERE id = ?1", params![stream_id, started_ms])
+            .map_err(err)?;
+        let mut added = 0;
+        for message in messages {
+            let viewer_id = viewer_for(&tx, message)?;
+            if insert_row(&tx, stream_id, viewer_id, message, None)?.is_some() {
+                added += 1;
+            }
+        }
+        tx.commit().map_err(err)?;
+        Ok(added)
+    }
+
+    /// Remembers that a past stream was looked at: read to the end (`replay` true), or found
+    /// without a chat replay.
+    pub fn record_archive(&self, video_id: &str, title: &str, replay: bool, messages: usize, now_ms: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO archives (video_id, title, status, messages, checked_ms) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(video_id) DO UPDATE SET title = excluded.title, status = excluded.status, messages = excluded.messages, checked_ms = excluded.checked_ms",
+                params![video_id, title, if replay { ARCHIVE_DONE } else { ARCHIVE_NONE }, messages as i64, now_ms],
+            )
+            .map(|_| ())
+            .map_err(err)
+    }
+
+    /// Whether a past stream needs no reading now: it was read to the end, or had no replay
+    /// when looked at within the last day.
+    pub fn archive_settled(&self, video_id: &str, now_ms: i64) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM archives WHERE video_id = ?1 AND (status = ?2 OR checked_ms > ?3))",
+                params![video_id, ARCHIVE_DONE, now_ms - ARCHIVE_RECHECK_MS],
+                |r| r.get(0),
+            )
+            .map_err(err)
+    }
+
     pub fn legacy_imported(&self) -> Result<bool> {
         Ok(self.setting(LEGACY_IMPORT_KEY)?.is_some())
     }
@@ -603,6 +672,67 @@ mod tests {
         assert_eq!((renamed.last_stream_ms, renamed.last_stream_ago), (Some(100), Some(2)));
         assert!(other.first_time, "same name on another channel is another viewer");
         assert!(!again.first_time);
+    }
+
+    #[test]
+    fn a_past_streams_chat_joins_the_history_without_turning_it_back() {
+        let mut db = Db::open_in_memory().unwrap();
+        // Collected live: the app joined this stream at 5000, a while after it went on air.
+        let live = db.ensure_stream(Platform::Youtube, "new", 5000).unwrap();
+        let before = db.insert(live, &message("n1", "New Name", Some("UC1"), 5100)).unwrap().unwrap();
+        assert!(before.first_time, "nothing older is known yet");
+
+        // An older stream is read from its replay afterwards, in two pages, the second one twice.
+        let page_one = [message("o1", "Old Name", Some("UC1"), 900), message("o2", "Other", Some("UC2"), 1010)];
+        let page_two = [message("o3", "Old Name", Some("UC1"), 1020)];
+        assert_eq!(db.import_archive("old", Some(1000), &page_one).unwrap(), 2);
+        assert_eq!(db.import_archive("old", Some(1000), &page_two).unwrap(), 1);
+        assert_eq!(db.import_archive("old", Some(1000), &page_two).unwrap(), 0, "reading again adds nothing");
+        // The replay of the live stream has what the app missed before it joined.
+        assert_eq!(db.import_archive("new", Some(4000), &[message("n0", "New Name", Some("UC1"), 4500), message("n1", "New Name", Some("UC1"), 5100)]).unwrap(), 1);
+
+        let (name, first_seen): (String, i64) = db
+            .conn
+            .query_row("SELECT display_name, first_seen_ms FROM viewers WHERE platform_user_id = 'UC1'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(name, "New Name", "an older message does not bring the old name back");
+        assert_eq!(first_seen, 900, "the first visit moves back to the older stream, chat before it went on air included");
+        let starts: Vec<(String, i64)> = {
+            let mut statement = db.conn.prepare("SELECT external_id, first_seen_ms FROM streams ORDER BY first_seen_ms").unwrap();
+            let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            rows.collect::<std::result::Result<_, _>>().unwrap()
+        };
+        assert_eq!(starts, vec![("old".to_string(), 1000), ("new".to_string(), 4000)], "streams sit where they went on air");
+
+        let again = db.insert(live, &message("n2", "New Name", Some("UC1"), 5200)).unwrap().unwrap();
+        assert!(!again.first_time);
+        assert_eq!((again.last_stream_ms, again.last_stream_ago), (Some(1000), Some(1)), "the older stream is now the last visit");
+        // What the question was: how many streams each viewer came to, and when first.
+        let visits: Vec<(String, i64, i64)> = {
+            let mut statement = db
+                .conn
+                .prepare(
+                    "SELECT v.platform_user_id, COUNT(DISTINCT m.stream_id), v.first_seen_ms FROM viewers v JOIN messages m ON m.viewer_id = v.id
+                     GROUP BY v.id ORDER BY v.platform_user_id",
+                )
+                .unwrap();
+            let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+            rows.collect::<std::result::Result<_, _>>().unwrap()
+        };
+        assert_eq!(visits, vec![("UC1".to_string(), 2, 900), ("UC2".to_string(), 1, 1010)]);
+    }
+
+    #[test]
+    fn a_stream_without_a_replay_is_looked_at_again_a_day_later() {
+        let mut db =Db::open_in_memory().unwrap();
+        let day = ARCHIVE_RECHECK_MS;
+        assert!(!db.archive_settled("a", day).unwrap(), "never looked at");
+        db.record_archive("a", "まだリプレイなし", false, 0, day).unwrap();
+        assert!(db.archive_settled("a", day + 1000).unwrap(), "just looked");
+        assert!(!db.archive_settled("a", 2 * day + 1).unwrap(), "worth another look");
+        db.record_archive("a", "リプレイあり", true, 120, 2 * day + 1).unwrap();
+        assert!(db.archive_settled("a", 100 * day).unwrap(), "read to the end: never again");
+        assert_eq!(db.import_archive("empty", None, &[]).unwrap(), 0, "a replay page without chat stores nothing");
     }
 
     fn legacy_db(path: &Path, with_channel: bool) {

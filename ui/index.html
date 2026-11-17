@@ -58,6 +58,19 @@
         <h2>コメント <span id="comment-count"></span></h2>
         <ol id="comments" class="list"></ol>
       </div>
+
+      <details class="card fold" id="fold-archive">
+        <summary><h2>過去の配信のコメント</h2> <strong class="fold-note" id="archive-note"></strong></summary>
+        <p class="hint">YouTube の過去の配信に残っているチャットのリプレイを読んで、履歴に入れます。初見の表示と「前回」に使われ、OBS には出さず、読み上げもしません。</p>
+        <p class="hint">YouTube に負担をかけないよう少しずつ読むので、配信が多いと数時間かかります。止めても、次は続きから読みます。リプレイが残っていない配信は読めません。</p>
+        <div class="buttons">
+          <input id="archive-input" size="36" placeholder="チャンネルか動画（空なら上の YouTube の欄）" aria-label="過去の配信を読むチャンネルか動画">
+          <button id="archive-start" class="primary">取り込む</button>
+          <button id="archive-stop" hidden>止める</button>
+        </div>
+        <p id="archive-status" aria-live="polite"></p>
+        <p id="archive-error" class="error" hidden></p>
+      </details>
     </section>
 
     <section data-panel="support" hidden>

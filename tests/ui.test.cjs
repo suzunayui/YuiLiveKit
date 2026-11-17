@@ -60,6 +60,9 @@ const fakeTauri = ({ state }) => {
             if (!args.youtube && !args.twitch) throw 'YouTubeかTwitchのどちらかを入力してください';
             return null;
           case 'import_legacy': return { streams: 3, viewers: 10, messages: 42 };
+          case 'start_archive':
+            if (args.input === 'https://example.com/') throw 'YouTubeのURLを入力してください';
+            return null;
           case 'set_support_read':
             support = support.map(s => (args.ids.includes(s.row_id) ? { ...s, read: args.read } : s));
             return support;
@@ -140,6 +143,8 @@ async function open(browser, server, state) {
   return { page, errors };
 }
 
+const idleArchive = { running: false, total: 0, checked: 0, streams: 0, messages: 0, unavailable: 0, current: null, waiting_seconds: null, error: null };
+
 function baseState(extra = {}) {
   return {
     parts: defaultParts, server_error: null, statuses: {},
@@ -159,6 +164,7 @@ function baseState(extra = {}) {
     obs_link: { start_with_obs: false, auto_start: false },
     appearance: defaultAppearance,
     legacy_imported: false, legacy_candidates: ['C:\\Users\\a\\AppData\\Roaming\\YuiLiveKit\\comments.db'],
+    archive: idleArchive,
     voice: {
       speech: { enabled: false, voice: { speaker: 3, speed: 1, volume: 1 }, read_name: true, replacements: [], ng_words: [], max_queue: 20 },
       ai: { enabled: false, model: 'gpt-6-luna', persona: '', triggers: [], voice: { speaker: 2, speed: 1, volume: 1 }, interval_seconds: 20, hourly_limit: 30, max_comment_chars: 200 },
@@ -226,6 +232,40 @@ test('top bar, comments, greetings and the history import', async () => {
     await page.click('[data-tab="comments"]');
     await page.click('#legacy-import');
     await page.waitForFunction(() => document.querySelector('#legacy-result').textContent.includes('42件'));
+
+    // Chat of past streams: started from a folding card, with the channel from the top bar
+    // unless another one is typed. The app reports how far it is.
+    assert.equal(await page.isVisible('#archive-start'), false, 'folded away until asked for');
+    await unfold(page, 'fold-archive');
+    await page.fill('#archive-input', 'https://example.com/');
+    await page.click('#archive-start');
+    await page.waitForFunction(() => !document.querySelector('#archive-error').hidden);
+    assert.match(await page.textContent('#archive-error'), /YouTubeのURL/);
+    await page.fill('#archive-input', '');
+    await page.click('#archive-start');
+    await page.waitForFunction(() => window.calls.some(c => c[0] === 'start_archive' && c[1].input === '@yui'));
+    assert.equal(await page.isHidden('#archive-error'), true);
+    assert.deepEqual(await page.evaluate(() => window.calls.filter(c => c[0] === 'start_archive').pop()), ['start_archive', { input: '@yui' }]);
+    const archive = extra => page.evaluate(a => window.fire('chat', a), { type: 'archive', ...idleArchive, running: true, ...extra });
+    await archive({ total: 60 });
+    assert.match(await page.textContent('#archive-status'), /一覧を読んでいます…（60本）/);
+    assert.equal(await page.isVisible('#archive-start'), false);
+    assert.equal(await page.textContent('#archive-note'), '取り込み中');
+    await archive({ total: 972, checked: 7, streams: 5, messages: 1512, unavailable: 1, current: '<b>配信</b>', waiting_seconds: 30 });
+    const progress = await page.textContent('#archive-status');
+    assert.match(progress, /7 \/ 972 本を確認しました。5 本を読み、新しいコメントは 1512 件です。/);
+    assert.match(progress, /読めなかった配信: 1 本.*読んでいる配信: <b>配信<\/b>.*30秒待っています/s, 'the title stays text');
+    await page.click('#archive-stop');
+    await page.waitForFunction(() => window.calls.some(c => c[0] === 'stop_archive'));
+    await archive({ running: false, total: 972, checked: 7, streams: 5, messages: 1512, unavailable: 1 });
+    assert.match(await page.textContent('#archive-status'), /止めました。次は続きから読みます。/);
+    assert.equal(await page.isVisible('#archive-start'), true);
+    await archive({ running: false, total: 972, checked: 972, streams: 900, messages: 250000, unavailable: 72 });
+    assert.match(await page.textContent('#archive-status'), /終わりました。/);
+    await archive({ running: false, total: 972, checked: 40, error: 'YouTube から読めない状態が続いたため、取り込みを止めました' });
+    assert.match(await page.textContent('#archive-error'), /取り込みを止めました/);
+    assert.equal(await page.isVisible('#comments'), true, 'none of this touches the comment list');
+    assert.deepEqual(await page.$$eval('#comments li', n => n.map(x => x.dataset.key)), ['youtube:1', 'youtube:9']);
 
     // Tabs sit in three groups. They move by dragging within their group, and the order is
     // still there after a restart.

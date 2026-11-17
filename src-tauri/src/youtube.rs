@@ -98,7 +98,7 @@ pub struct PageOptions {
     pub continuation: String,
 }
 
-fn capture(html: &str, pattern: &str) -> Option<String> {
+pub(crate) fn capture(html: &str, pattern: &str) -> Option<String> {
     regex::Regex::new(pattern).ok()?.captures(html).map(|c| c[1].to_string())
 }
 
@@ -197,7 +197,7 @@ fn parse_badges(renderer: &Value) -> Badges {
     badges
 }
 
-fn parse_item(item: &Value, index: usize) -> Option<ChatMessage> {
+pub(crate) fn parse_item(item: &Value, index: usize) -> Option<ChatMessage> {
     let (renderer, msg_kind) = [
         ("liveChatTextMessageRenderer", kind::TEXT),
         ("liveChatPaidMessageRenderer", kind::PAID),

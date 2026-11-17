@@ -123,7 +123,8 @@ async fn overlay_socket(mut socket: WebSocket, core: Arc<Core>) {
                     | Ok(Notice::SubtitleState(_))
                     | Ok(Notice::TranslationState(_))
                     | Ok(Notice::Runtime(_))
-                    | Ok(Notice::Voicevox(_)) => continue,
+                    | Ok(Notice::Voicevox(_))
+                    | Ok(Notice::Archive(_)) => continue,
                     Ok(notice) => serde_json::to_string(&notice).unwrap_or_default(),
                     // Too far behind: start over from the current state.
                     Err(RecvError::Lagged(_)) => snapshot_json(&core),

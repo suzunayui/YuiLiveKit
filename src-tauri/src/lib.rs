@@ -3,6 +3,7 @@
 pub mod core;
 pub mod db;
 pub mod appearance;
+pub mod archive;
 pub mod background;
 pub mod model;
 pub mod obs_plugin;

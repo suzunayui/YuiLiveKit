@@ -609,6 +609,38 @@ $('legacy-import').addEventListener('click', async () => {
   }
 });
 
+// --- Past streams ----------------------------------------------------------------------
+
+function renderArchive(state) {
+  $('archive-start').hidden = state.running;
+  $('archive-stop').hidden = !state.running;
+  $('archive-input').disabled = state.running;
+  $('archive-note').textContent = state.running ? '取り込み中' : '';
+  showError('archive-error', state.error);
+  const lines = [];
+  if (state.running && !state.checked && !state.current) {
+    lines.push(`配信の一覧を読んでいます…${state.total ? `（${state.total}本）` : ''}`);
+  } else if (state.running || state.total) {
+    lines.push(`${state.checked} / ${state.total} 本を確認しました。${state.streams} 本を読み、新しいコメントは ${state.messages} 件です。`);
+    if (state.unavailable) lines.push(`リプレイがない、または読めなかった配信: ${state.unavailable} 本`);
+    if (state.current) lines.push(`読んでいる配信: ${state.current}`);
+    if (!state.running && !state.error) lines.push(state.checked >= state.total ? '終わりました。' : '止めました。次は続きから読みます。');
+  }
+  if (state.waiting_seconds) lines.push(`YouTube に待つように言われたため、${state.waiting_seconds}秒待っています。`);
+  $('archive-status').replaceChildren(...lines.map(line => element('div', '', line)));
+}
+
+$('archive-start').addEventListener('click', async () => {
+  showError('archive-error', '');
+  try {
+    // An empty box means the channel in the YouTube box at the top, saved or not yet.
+    await invoke('start_archive', { input: $('archive-input').value.trim() || $('youtube').value.trim() });
+  } catch (error) {
+    showError('archive-error', String(error));
+  }
+});
+$('archive-stop').addEventListener('click', () => invoke('stop_archive'));
+
 // --- Reading aloud ---------------------------------------------------------------------
 
 /** The chosen speaker is kept in a hidden box; its button shows the name and opens the picker. */
@@ -983,6 +1015,7 @@ await listen('chat', ({ payload }) => {
     for (const line of document.querySelectorAll('#comments .translation')) { line.textContent = ''; line.hidden = true; }
   } else if (payload.type === 'runtime') renderRuntime(payload);
   else if (payload.type === 'voicevox') renderVoicevox(payload);
+  else if (payload.type === 'archive') renderArchive(payload);
 });
 await listen('server-error', ({ payload }) => showError('server-error', payload));
 
@@ -1009,6 +1042,7 @@ if (!state.legacy_imported && state.legacy_candidates.length) {
   for (const path of state.legacy_candidates) $('legacy-path').append(element('option', '', path));
   $('legacy').hidden = false;
 }
+renderArchive(state.archive);
 const voice = await invoke('get_voice_state');
 viewers = voice.viewers;
 renderSpeech(voice.speech);

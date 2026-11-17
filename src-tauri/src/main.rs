@@ -13,7 +13,7 @@ use tauri::{
     Emitter, Manager,
 };
 use yui_live_kit::{
-    core::{Connection, Core, Media, Notice, Status, ToolSettings},
+    core::{ArchiveState, Connection, Core, Media, Notice, Status, ToolSettings},
     db::{Db, ImportSummary, Shown},
     appearance::{self, Appearance},
     background::{self, Action, ObsLink},
@@ -133,6 +133,7 @@ struct AppState {
     appearance: Appearance,
     legacy_imported: bool,
     legacy_candidates: Vec<String>,
+    archive: ArchiveState,
 }
 
 #[tauri::command]
@@ -151,7 +152,18 @@ fn get_state(core: CoreState<'_>, error: tauri::State<'_, ServerError>) -> AppSt
         appearance: core.appearance(),
         legacy_imported: core.db().legacy_imported().unwrap_or(false),
         legacy_candidates: legacy_candidates(),
+        archive: core.archive_state(),
     }
+}
+
+#[tauri::command]
+async fn start_archive(core: CoreState<'_>, input: String) -> Result<(), String> {
+    core.start_archive(&input)
+}
+
+#[tauri::command]
+fn stop_archive(core: CoreState<'_>) {
+    core.stop_archive();
 }
 
 #[tauri::command]
@@ -534,6 +546,8 @@ fn main() {
             start_chat,
             stop_chat,
             import_legacy,
+            start_archive,
+            stop_archive,
             set_participant_status,
             clear_participants,
             reorder_participants,

@@ -76,6 +76,35 @@ pub enum Notice {
     TranslationsCleared,
     Runtime(RuntimeState),
     Voicevox(crate::voicevox::VoicevoxState),
+    /// How reading the chat of past streams is going.
+    Archive(ArchiveState),
+}
+
+/// Reading the chat of past streams: how far it is, for the settings window.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ArchiveState {
+    pub running: bool,
+    /// Streams the channel lists, and how many of them have been dealt with in this run.
+    pub total: usize,
+    pub checked: usize,
+    /// Streams read to the end in this run, and the messages that were new.
+    pub streams: usize,
+    pub messages: usize,
+    /// Streams without a chat replay, or that could not be read.
+    pub unavailable: usize,
+    /// The stream being read.
+    pub current: Option<String>,
+    /// YouTube asked to slow down; the next try is this many seconds away.
+    pub waiting_seconds: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Default)]
+struct ArchiveRun {
+    state: ArchiveState,
+    cancel: Option<CancellationToken>,
+    /// Messages found in the replay being read, new or not.
+    found: usize,
 }
 
 /// Subtitles, translation and what they need installed. Attached by the app once it knows its folders.
@@ -158,6 +187,7 @@ pub struct Core {
     /// Subtitles started by "start chat" also stop with it.
     subtitles_with_chat: Mutex<bool>,
     last_subtitle: Mutex<Option<(String, String, i64)>>,
+    archive: Mutex<ArchiveRun>,
 }
 
 pub fn now_ms() -> i64 {
@@ -223,6 +253,7 @@ impl Core {
             media_settings: Mutex::new(media_settings),
             subtitles_with_chat: Mutex::new(false),
             last_subtitle: Mutex::new(None),
+            archive: Mutex::new(ArchiveRun::default()),
             me: me.clone(),
             db: Mutex::new(db),
             notices,
@@ -1016,6 +1047,105 @@ impl Core {
             .unwrap_or_else(|| format!("{prefix}{now}"))
     }
 
+    // --- Past streams -------------------------------------------------------------------
+
+    pub fn archive_state(&self) -> ArchiveState {
+        self.archive.lock().unwrap().state.clone()
+    }
+
+    /// Reads the chat replays of a channel's past streams (or of one video) into the history,
+    /// slowly and in the background. An empty input means where chat was last collected from.
+    /// Nothing is shown, read aloud, answered or translated. Needs a Tokio runtime.
+    pub fn start_archive(self: &Arc<Self>, input: &str) -> Result<(), String> {
+        let input = if input.trim().is_empty() { self.connection().youtube } else { input.trim().to_string() };
+        if input.is_empty() {
+            return Err("YouTube のチャンネルか動画を入力してください".into());
+        }
+        let target = youtube::parse_target(&input)?;
+        let token = CancellationToken::new();
+        let state = {
+            let mut run = self.archive.lock().unwrap();
+            if run.state.running {
+                return Err("過去の配信を取り込んでいるところです".into());
+            }
+            *run = ArchiveRun { state: ArchiveState { running: true, ..ArchiveState::default() }, cancel: Some(token.clone()), found: 0 };
+            run.state.clone()
+        };
+        self.notify(Notice::Archive(state));
+        let core = self.clone();
+        tokio::spawn(async move {
+            let known = core.clone();
+            let settled = move |video_id: &str| known.db().archive_settled(video_id, now_ms()).unwrap_or(false);
+            let result = crate::archive::run(target, token, settled, |event| core.on_archive(event)).await;
+            core.finish_archive(result.err());
+        });
+        Ok(())
+    }
+
+    /// Stops reading past streams. What was read stays; the next run goes on from there.
+    pub fn stop_archive(&self) {
+        if let Some(token) = self.archive.lock().unwrap().cancel.take() {
+            token.cancel();
+        }
+    }
+
+    fn finish_archive(&self, error: Option<String>) {
+        let state = {
+            let mut run = self.archive.lock().unwrap();
+            run.cancel = None;
+            run.state.running = false;
+            run.state.current = None;
+            run.state.waiting_seconds = None;
+            if error.is_some() {
+                run.state.error = error;
+            }
+            run.state.clone()
+        };
+        self.notify(Notice::Archive(state));
+    }
+
+    /// Stores what the reader found and keeps count.
+    pub fn on_archive(&self, event: crate::archive::Event) {
+        use crate::archive::{Event, Outcome};
+        let state = {
+            let mut run = self.archive.lock().unwrap();
+            run.state.waiting_seconds = None;
+            match event {
+                Event::Listed { total } => run.state.total = total,
+                Event::Skipped => run.state.checked += 1,
+                Event::Started { title } => {
+                    run.state.current = Some(title);
+                    run.found = 0;
+                }
+                Event::Page { video_id, started_ms, messages } => {
+                    run.found += messages.len();
+                    match self.db().import_archive(&video_id, started_ms, &messages) {
+                        Ok(added) => run.state.messages += added,
+                        Err(error) => run.state.error = Some(error),
+                    }
+                }
+                Event::Finished { video_id, title, outcome } => {
+                    run.state.checked += 1;
+                    run.state.current = None;
+                    if outcome == Outcome::Done {
+                        run.state.streams += 1;
+                    } else {
+                        run.state.unavailable += 1;
+                    }
+                    // A stream that could not be read is left unrecorded, to be tried again.
+                    if outcome != Outcome::Unreadable {
+                        if let Err(error) = self.db().record_archive(&video_id, &title, outcome == Outcome::Done, run.found, now_ms()) {
+                            run.state.error = Some(error);
+                        }
+                    }
+                }
+                Event::Waiting { seconds } => run.state.waiting_seconds = Some(seconds),
+            }
+            run.state.clone()
+        };
+        self.notify(Notice::Archive(state));
+    }
+
     /// Stops collecting. What was collected stays on the overlay until the next start.
     pub fn stop(&self) {
         self.queue.lock().unwrap().clear();
@@ -1068,6 +1198,46 @@ mod tests {
 
     fn batch(messages: Vec<ChatMessage>) -> Batch {
         Batch { messages, removals: vec![] }
+    }
+
+    #[test]
+    fn past_streams_go_into_the_history_and_nowhere_else() {
+        use crate::archive::{Event, Outcome};
+        let core = Core::new(Db::open_in_memory().unwrap());
+        // A stream is being collected while the past ones are read.
+        core.reset_session();
+        let live = core.add_stream(Platform::Youtube, "live").unwrap();
+        let mut notices = core.subscribe();
+
+        core.on_archive(Event::Listed { total: 4 });
+        core.on_archive(Event::Skipped);
+        core.on_archive(Event::Started { title: "昔の配信".into() });
+        core.on_archive(Event::Waiting { seconds: 30 });
+        assert_eq!(core.archive_state().waiting_seconds, Some(30));
+        let old = ChatMessage { created_ms: 1500, ..message("o1", "UC1", "参加希望 おはよ") };
+        core.on_archive(Event::Page { video_id: "old".into(), started_ms: Some(1000), messages: vec![old.clone()] });
+        core.on_archive(Event::Page { video_id: "old".into(), started_ms: Some(1000), messages: vec![old] });
+        assert_eq!(core.archive_state().current.as_deref(), Some("昔の配信"));
+        core.on_archive(Event::Finished { video_id: "old".into(), title: "昔の配信".into(), outcome: Outcome::Done });
+        core.on_archive(Event::Finished { video_id: "none".into(), title: String::new(), outcome: Outcome::NoReplay });
+        core.on_archive(Event::Finished { video_id: "broken".into(), title: String::new(), outcome: Outcome::Unreadable });
+
+        let state = core.archive_state();
+        assert_eq!((state.total, state.checked, state.streams, state.messages, state.unavailable), (4, 4, 1, 1, 2));
+        assert_eq!((state.current, state.waiting_seconds, state.error), (None, None, None));
+        let now = now_ms();
+        assert!(core.db().archive_settled("old", now).unwrap() && core.db().archive_settled("none", now).unwrap());
+        assert!(!core.db().archive_settled("broken", now).unwrap(), "what could not be read is tried again");
+
+        // Only the progress is announced: nothing is shown, queued to join or counted as a greeting.
+        while let Ok(notice) = notices.try_recv() {
+            assert!(matches!(notice, Notice::Archive(_)), "{notice:?}");
+        }
+        assert!(core.snapshot(10).is_empty() && core.participants().is_empty());
+        assert_eq!(core.ohayo().count, 0);
+        // The viewer is no longer new when they write on the stream being collected.
+        core.ingest(live, batch(vec![message("l1", "UC1", "hi")]));
+        assert!(!core.snapshot(10)[0].first_time);
     }
 
     #[test]
