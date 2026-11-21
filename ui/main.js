@@ -498,7 +498,8 @@ $('participants-clear-all').addEventListener('click', async () => {
 const LOOK_FIELDS = {
   comments: [['font_size', '文字の大きさ', 'number'], ['max', '表示する件数', 'number'], ['background', '背景色（#RRGGBBAA）', 'text'],
     ['text_color', '文字の色', 'text'], ['author_color', '名前の色', 'text'], ['show_icons', 'アイコンを表示', 'checkbox']],
-  niconico: [['font_size', '文字の大きさ', 'number'], ['duration', '流れる秒数', 'number'], ['color', '文字の色', 'text']],
+  niconico: [['font_size', '文字の大きさ', 'number'], ['duration', '流れる秒数', 'number'], ['color', '文字の色', 'text'],
+    ['outline_width', 'フチの太さ（0 でフチなし）', 'number'], ['outline_color', 'フチの色', 'text']],
   participants: [['font_size', '文字の大きさ', 'number'], ['horizontal', '横に並べる', 'checkbox'], ['title', '見出し', 'text']],
   ohayo: [['font_size', '文字の大きさ', 'number'], ['label', '表示する言葉', 'text']],
   subtitles: [['font_size', '日本語の文字の大きさ', 'number'], ['english_size', '英語の文字の大きさ', 'number'], ['duration', '表示する秒数', 'number'],

@@ -62,6 +62,9 @@ pub struct Niconico {
     pub font_size: i64,
     pub duration: f64,
     pub color: String,
+    /// How far the outline around each character reaches, in pixels. 0 draws none.
+    pub outline_width: i64,
+    pub outline_color: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -115,7 +118,7 @@ impl Default for Comments {
 
 impl Default for Niconico {
     fn default() -> Self {
-        Self { font_size: 56, duration: 8.0, color: "#ffffff".into() }
+        Self { font_size: 56, duration: 8.0, color: "#ffffff".into(), outline_width: 2, outline_color: "#000000".into() }
     }
 }
 
@@ -178,6 +181,8 @@ impl Appearance {
         self.comments.author_color = color(&self.comments.author_color, &defaults.comments.author_color);
         self.niconico.duration = seconds(self.niconico.duration, 2.0, 30.0, 8.0);
         self.niconico.color = color(&self.niconico.color, &defaults.niconico.color);
+        self.niconico.outline_width = self.niconico.outline_width.clamp(0, 30);
+        self.niconico.outline_color = color(&self.niconico.outline_color, &defaults.niconico.outline_color);
         self.participants.title = text(&self.participants.title, 40);
         self.ohayo.label = text(&self.ohayo.label, 40);
         self.subtitles.duration = seconds(self.subtitles.duration, 2.0, 60.0, 10.0);
@@ -204,12 +209,16 @@ mod tests {
         appearance.comments.font_size = 1000;
         appearance.comments.background = "red; background:url(x)".into();
         appearance.niconico.duration = f64::NAN;
+        appearance.niconico.outline_width = 500;
+        appearance.niconico.outline_color = "black".into();
         appearance.participants.title = "a\u{0}b".repeat(30);
         appearance.subtitles.alignment = "middle".into();
         let fixed = appearance.sanitized();
         assert_eq!(fixed.comments.font_size, 200);
         assert_eq!(fixed.comments.background, "#000000c7");
         assert_eq!(fixed.niconico.duration, 8.0);
+        assert_eq!(fixed.niconico.outline_width, 30);
+        assert_eq!(fixed.niconico.outline_color, "#000000");
         assert_eq!(fixed.participants.title.chars().count(), 40);
         assert!(!fixed.participants.title.contains('\u{0}'));
         assert_eq!(fixed.subtitles.alignment, "center");

@@ -30,7 +30,10 @@
 
   .bullet { position: absolute; left: 0; white-space: nowrap; font-weight: 800; font-size: var(--nico-size);
     color: var(--nico-color); will-change: transform;
-    text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 0 6px #000; }
+    /* The outline: a stroke twice as wide as it should reach, painted under the fill, so only the
+       outer half shows. The padding keeps it inside the box that the lanes are measured by. */
+    padding: var(--nico-outline); -webkit-text-stroke: calc(var(--nico-outline) * 2) var(--nico-outline-color);
+    paint-order: stroke fill; }
 
   #participants { color: #fff; font-size: var(--participants-size); font-weight: 700; text-shadow: 0 0 4px #000; }
   #participants h2 { margin: 0 0 8px; font-size: 1em; }
@@ -100,6 +103,8 @@ function applyAppearance(next) {
   vars.setProperty('--comment-size', `${next.comments.font_size}px`);
   vars.setProperty('--nico-size', `${next.niconico.font_size}px`);
   vars.setProperty('--nico-color', next.niconico.color);
+  vars.setProperty('--nico-outline', `${next.niconico.outline_width}px`);
+  vars.setProperty('--nico-outline-color', next.niconico.outline_color);
   vars.setProperty('--participants-size', `${next.participants.font_size}px`);
   vars.setProperty('--ohayo-size', `${next.ohayo.font_size}px`);
   vars.setProperty('--sub-size', `${next.subtitles.font_size}px`);

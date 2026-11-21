@@ -20,7 +20,7 @@ function serve() {
 
 const defaultAppearance = {
   comments: { font_size: 24, max: 12, background: '#000000c7', text_color: '#ffffff', author_color: '#ffd8f8', show_icons: true },
-  niconico: { font_size: 56, duration: 8, color: '#ffffff' },
+  niconico: { font_size: 56, duration: 8, color: '#ffffff', outline_width: 2, outline_color: '#000000' },
   participants: { font_size: 24, horizontal: false, title: '参加待ち' },
   ohayo: { font_size: 40, label: 'おはよう' },
   subtitles: { font_size: 46, english_size: 32, duration: 10, alignment: 'center', text_color: '#ffffff', english_color: '#ffffff' },
@@ -379,12 +379,19 @@ test('support, participants, appearance and OBS tabs', async () => {
     await page.uncheck('.look-part[data-part="comments"] input[data-field="show_icons"]');
     await page.fill('.look-part[data-part="ohayo"] input[data-field="label"]', 'Good morning');
     await page.dispatchEvent('.look-part[data-part="ohayo"] input[data-field="label"]', 'change');
+    const outline = '.look-part[data-part="niconico"] input[data-field="outline_width"]';
+    assert.equal(await page.inputValue(outline), '2');
+    await page.fill(outline, '8');
+    await page.dispatchEvent(outline, 'change');
+    await page.fill('.look-part[data-part="niconico"] input[data-field="outline_color"]', '#ff00ff');
+    await page.dispatchEvent('.look-part[data-part="niconico"] input[data-field="outline_color"]', 'change');
     await page.click('#look-save');
     await page.waitForFunction(() => document.getElementById('look-result').textContent.startsWith('保存しました'));
     const saved = (await page.evaluate(() => window.calls.filter(c => c[0] === 'save_appearance').pop()))[1].appearance;
     assert.equal(saved.comments.font_size, 999);
     assert.equal(saved.comments.show_icons, false);
     assert.equal(saved.ohayo.label, 'Good morning');
+    assert.deepEqual([saved.niconico.outline_width, saved.niconico.outline_color], [8, '#ff00ff'], 'the outline is saved as a number and a colour');
     assert.equal(await page.inputValue(size), '200', 'the form shows what the app kept');
     await page.evaluate(a => window.fire('chat', { type: 'appearance', ...a, niconico: { ...a.niconico, color: '#ff0000' } }), defaultAppearance);
     assert.equal(await page.inputValue('.look-part[data-part="niconico"] input[data-field="color"]'), '#ff0000', 'the form follows changes');

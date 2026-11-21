@@ -31,7 +31,7 @@ function startDemo() {
 function appearance(changes) {
   const base = {
     comments: { font_size: 24, max: 12, background: '#000000c7', text_color: '#ffffff', author_color: '#ffd8f8', show_icons: true },
-    niconico: { font_size: 56, duration: 30, color: '#ffffff' },
+    niconico: { font_size: 56, duration: 30, color: '#ffffff', outline_width: 2, outline_color: '#000000' },
     participants: { font_size: 24, horizontal: false, title: '参加待ち' },
     ohayo: { font_size: 40, label: 'おはよう' },
     subtitles: { font_size: 46, english_size: 32, duration: 2, alignment: 'center', text_color: '#ffffff', english_color: '#ffffff' },
@@ -74,6 +74,18 @@ test('each part is its own page: niconico, participants and greetings', async ()
     await comments.waitForFunction(() => document.querySelectorAll('#comments .msg').length === 1);
     assert.equal(await comments.$$eval('.bullet', n => n.length), 0, 'only the niconico page flies comments');
     assert.equal(await nico.$$eval('.msg', n => n.length), 0, 'only the comments page lists them');
+
+    // The outline is a stroke under the fill, twice as wide as it reaches, in the chosen colour.
+    const outline = () => nico.$eval('#niconico .bullet', b => {
+      const style = getComputedStyle(b);
+      return [style.webkitTextStrokeWidth, style.webkitTextStrokeColor, style.paintOrder, style.paddingTop];
+    });
+    assert.deepEqual(await outline(), ['4px', 'rgb(0, 0, 0)', 'stroke', '2px']);
+    await demo.send({ op: 'save_appearance', appearance: appearance({ niconico: { outline_width: 6, outline_color: '#ff0000' } }) });
+    await nico.waitForFunction(() => getComputedStyle(document.querySelector('#niconico .bullet')).webkitTextStrokeWidth === '12px');
+    assert.deepEqual(await outline(), ['12px', 'rgb(255, 0, 0)', 'stroke', '6px'], 'a comment already flying follows the change');
+    await demo.send({ op: 'save_appearance', appearance: appearance({ niconico: { outline_width: 0 } }) });
+    await nico.waitForFunction(() => getComputedStyle(document.querySelector('#niconico .bullet')).webkitTextStrokeWidth === '0px');
     await demo.send({ op: 'remove', id: 'n1' });
     await nico.waitForFunction(() => !document.querySelector('#niconico .bullet'), null, { timeout: 5000 });
 
